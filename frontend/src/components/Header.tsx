@@ -18,6 +18,7 @@ export function Header() {
   const navLinks = [
     { to: "/", label: "Home" },
     { to: "/try-on", label: "Try On" },
+    { to: "/avatar", label: "Avatar" },
     { to: "/history", label: "History" },
   ];
 

@@ -15,8 +15,9 @@ class JobModel(Base):
     status = Column(SQLEnum(JobStatus), nullable=False)
     progress = Column(Integer, default=0, nullable=False)
     person_upload_id = Column(String, nullable=False)
-    garment_upload_id = Column(String, nullable=False)
+    garment_upload_id = Column(String, nullable=True)
     garment_category = Column(String, nullable=False)
+    job_type = Column(String, nullable=False, default="tryon")
     
     person_path = Column(String, nullable=True)
     garment_path = Column(String, nullable=True)

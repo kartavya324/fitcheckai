@@ -255,3 +255,36 @@ export function useJobs(limit: number = 20, offset: number = 0) {
     queryFn: () => getJobs(limit, offset),
   });
 }
+
+// ── Avatar API ──────────────────────────────────────────────
+
+export interface AvatarCreateResponse {
+  job_id: string;
+  session_id: string;
+  status: string;
+}
+
+export interface AvatarStatusResponse {
+  job_id: string;
+  status: string;
+  progress: number;
+  stage: string;
+  avatar_url: string | null;
+}
+
+export async function createAvatar(imageFile: File): Promise<AvatarCreateResponse> {
+  const formData = new FormData();
+  formData.append("person_image", imageFile);
+  const res = await fetch(`${API_BASE_URL}/api/v1/avatar/create`, {
+    method: "POST",
+    body: formData,
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function getAvatarStatus(jobId: string): Promise<AvatarStatusResponse> {
+  const res = await fetch(`${API_BASE_URL}/api/v1/avatar/status/${jobId}`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}

@@ -16,3 +16,5 @@ storage/meta/
 *.egg-info/
 dist/
 build/
+storage/fitcheck.db
+storage/avatars/

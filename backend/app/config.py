@@ -46,6 +46,9 @@ class Settings(BaseSettings):
         default="replicate_2d",
         alias="GENERATION_MODE",
     )
+    avatar_mode: str = Field(default="stub", alias="AVATAR_MODE")
+    runpod_api_key: str | None = Field(default=None, alias="RUNPOD_API_KEY")
+    runpod_endpoint_id: str | None = Field(default=None, alias="RUNPOD_ENDPOINT_ID")
 
     @field_validator("cors_origins", mode="before")
     @classmethod

@@ -89,26 +89,43 @@ class GenerationService:
         if on_progress:
             on_progress(25, "Connecting to IDM-VTON...")
 
-        cat_lower = (garment_category or "").lower()
+        cat_raw = (garment_category or "").lower().replace("-", " ").replace("_", " ").strip()
 
-        lower_body_keywords = [
-            "pant", "pants", "trouser", "trousers", "jeans", "denim",
-            "skirt", "shorts", "short", "jogger", "joggers", "legging",
-            "leggings", "bottom", "lower", "chino", "chinos", "cargo",
-            "palazzo", "dhoti", "churidar", "salwar", "pyjama", "trackpant",
-            "sweatpant", "sweatpants"
-        ]
-        dress_keywords = [
-            "dress", "gown", "saree", "sari", "lehenga", "anarkali",
-            "jumpsuit", "romper", "co-ord", "coord", "set"
-        ]
-
-        if any(kw in cat_lower for kw in dress_keywords):
-            mapped_category = "dresses"
-        elif any(kw in cat_lower for kw in lower_body_keywords):
+        # Check for explicit category strings first (from frontend)
+        if cat_raw in ["lower body", "lower", "bottom body", "lower_body"]:
             mapped_category = "lower_body"
-        else:
+        elif cat_raw in ["dresses", "full body", "dress", "gown", "full"]:
+            mapped_category = "dresses"
+        elif cat_raw in ["upper body", "upper", "top", "upper_body"]:
             mapped_category = "upper_body"
+        else:
+            # Fall back to keyword matching
+            lower_keywords = [
+                "jogger", "joggers", "sweatpant", "sweatpants", "trackpant",
+                "jeans", "trouser", "trousers", "pant", "pants", "short",
+                "shorts", "skirt", "palazzo", "salwar", "churidar", "legging",
+                "leggings", "cargo", "chino", "dhoti", "lower", "bottom"
+            ]
+            dress_keywords = [
+                "dress", "gown", "saree", "sari", "lehenga", "anarkali",
+                "jumpsuit", "romper", "coord", "co-ord", "set"
+            ]
+            if any(kw in cat_raw for kw in dress_keywords):
+                mapped_category = "dresses"
+            elif any(kw in cat_raw for kw in lower_keywords):
+                mapped_category = "lower_body"
+            else:
+                mapped_category = "upper_body"
+
+        import logging; logging.getLogger(__name__).warning(
+            f"[CAT] raw='{cat_raw}' mapped='{mapped_category}'"
+        )
+
+        # Add this debug log so we can see what's happening:
+        import logging
+        logging.getLogger(__name__).info(
+            f"Category mapping: input='{garment_category}' → output='{mapped_category}'"
+        )
 
         # Compress input images to speed up network transfers and model execution
         person_path = self._compress_image(str(person_path))

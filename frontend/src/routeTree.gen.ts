@@ -14,6 +14,7 @@ import { Route as SitemapDotxmlRouteImport } from './routes/sitemap[.]xml'
 import { Route as ResultsRouteImport } from './routes/results'
 import { Route as ProcessingRouteImport } from './routes/processing'
 import { Route as HistoryRouteImport } from './routes/history'
+import { Route as AvatarRouteImport } from './routes/avatar'
 import { Route as IndexRouteImport } from './routes/index'
 
 const TryOnRoute = TryOnRouteImport.update({
@@ -41,6 +42,11 @@ const HistoryRoute = HistoryRouteImport.update({
   path: '/history',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AvatarRoute = AvatarRouteImport.update({
+  id: '/avatar',
+  path: '/avatar',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
@@ -49,6 +55,7 @@ const IndexRoute = IndexRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/avatar': typeof AvatarRoute
   '/history': typeof HistoryRoute
   '/processing': typeof ProcessingRoute
   '/results': typeof ResultsRoute
@@ -57,6 +64,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/avatar': typeof AvatarRoute
   '/history': typeof HistoryRoute
   '/processing': typeof ProcessingRoute
   '/results': typeof ResultsRoute
@@ -66,6 +74,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/avatar': typeof AvatarRoute
   '/history': typeof HistoryRoute
   '/processing': typeof ProcessingRoute
   '/results': typeof ResultsRoute
@@ -76,16 +85,25 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/avatar'
     | '/history'
     | '/processing'
     | '/results'
     | '/sitemap.xml'
     | '/try-on'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/history' | '/processing' | '/results' | '/sitemap.xml' | '/try-on'
+  to:
+    | '/'
+    | '/avatar'
+    | '/history'
+    | '/processing'
+    | '/results'
+    | '/sitemap.xml'
+    | '/try-on'
   id:
     | '__root__'
     | '/'
+    | '/avatar'
     | '/history'
     | '/processing'
     | '/results'
@@ -95,6 +113,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AvatarRoute: typeof AvatarRoute
   HistoryRoute: typeof HistoryRoute
   ProcessingRoute: typeof ProcessingRoute
   ResultsRoute: typeof ResultsRoute
@@ -139,6 +158,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof HistoryRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/avatar': {
+      id: '/avatar'
+      path: '/avatar'
+      fullPath: '/avatar'
+      preLoaderRoute: typeof AvatarRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -151,6 +177,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AvatarRoute: AvatarRoute,
   HistoryRoute: HistoryRoute,
   ProcessingRoute: ProcessingRoute,
   ResultsRoute: ResultsRoute,

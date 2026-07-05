@@ -40,8 +40,9 @@ class Job:
     status: JobStatus
     progress: int
     person_upload_id: str
-    garment_upload_id: str
+    garment_upload_id: str | None
     garment_category: str
+    job_type: str = "tryon"
     person_path: str | None = None
     garment_path: str | None = None
     result_path: str | None = None
@@ -52,3 +53,13 @@ class Job:
     updated_at: datetime | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
+
+
+@dataclass
+class JobCreate:
+    person_upload_id: str
+    garment_upload_id: str | None = None
+    garment_category: str = "T-Shirt"
+    job_type: str = "tryon"
+    session_id: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)

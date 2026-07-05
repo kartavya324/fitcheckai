@@ -44,17 +44,26 @@ const GROUPED_CATEGORIES = [
       "Kurta",
       "Blazer / Jacket",
       "Hoodie / Sweatshirt",
-      "Sweater",
       "Top / Blouse",
     ],
   },
   {
     label: "Lower Body",
-    options: ["Jeans / Trousers", "Joggers / Sweatpants", "Shorts", "Skirt", "Palazzo / Salwar"],
+    options: [
+      "Jeans / Trousers",
+      "Joggers / Sweatpants",
+      "Shorts",
+      "Skirt",
+      "Palazzo / Salwar",
+    ],
   },
   {
     label: "Full Body",
-    options: ["Dress / Gown", "Saree / Lehenga", "Jumpsuit / Co-ord Set"],
+    options: [
+      "Dress / Gown",
+      "Saree / Lehenga",
+      "Jumpsuit / Co-ord Set",
+    ],
   },
 ];
 
@@ -354,7 +363,7 @@ function TryOnPage() {
           Build your look
         </h1>
         <p className="mx-auto mt-3 max-w-xl text-muted-foreground">
-          Pick a photo of yourself and any upper-body garment — by image or product link. Our AI
+          Pick a photo of yourself and any garment — by image or product link. Our AI
           handles the rest.
         </p>
       </motion.div>
