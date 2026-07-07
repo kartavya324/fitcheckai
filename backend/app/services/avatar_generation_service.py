@@ -27,6 +27,12 @@ class AvatarGenerationService:
                 person_image_path=person_image_path,
                 on_progress=on_progress,
             )
+        if self._settings.avatar_mode == "local_pifuhd":
+            return self._generate_local_pifuhd(
+                session_id=session_id,
+                person_image_path=person_image_path,
+                on_progress=on_progress,
+            )
         return self._generate_stub(
             session_id=session_id,
             person_image_path=person_image_path,
@@ -133,6 +139,70 @@ class AvatarGenerationService:
             raise AppError(
                 f"Invalid RunPod response: {e}",
                 code="RUNPOD_ERROR",
+                status_code=500,
+            ) from e
+
+        if on_progress:
+            on_progress(95, "Saving avatar...")
+
+        result_path = self._save_avatar_glb(session_id, glb_bytes)
+
+        if on_progress:
+            on_progress(100, "Avatar ready!")
+
+        return result_path
+
+    def _generate_local_pifuhd(self, *, session_id, person_image_path, on_progress=None):
+        """Call local PIFuHD Flask server (pifuhd_server.py) running on this machine."""
+        local_url = getattr(self._settings, "local_inference_url", "http://localhost:8090")
+
+        if on_progress:
+            on_progress(10, "Uploading photo to local PIFuHD server...")
+
+        image_b64 = base64.b64encode(
+            open(person_image_path, "rb").read()
+        ).decode()
+
+        if on_progress:
+            on_progress(25, "Reconstructing 3D body mesh (3-6 min on RTX 3050)...")
+
+        try:
+            response = httpx.post(
+                f"{local_url}/generate",
+                json={"image_base64": image_b64},
+                timeout=400.0,
+            )
+            response.raise_for_status()
+        except httpx.ConnectError as e:
+            raise AppError(
+                "Local PIFuHD server is not running. Start start_pifuhd_server.bat first.",
+                code="PIFUHD_UNAVAILABLE",
+                status_code=503,
+            ) from e
+        except Exception as e:
+            raise AppError(
+                f"Local PIFuHD server error: {e}",
+                code="PIFUHD_ERROR",
+                status_code=500,
+            ) from e
+
+        if on_progress:
+            on_progress(80, "Converting mesh to GLB...")
+
+        result = response.json()
+        if "error" in result:
+            raise AppError(
+                f"PIFuHD inference failed: {result['error']}",
+                code="PIFUHD_ERROR",
+                status_code=500,
+            )
+
+        try:
+            glb_bytes = base64.b64decode(result["glb_base64"])
+        except (KeyError, Exception) as e:
+            raise AppError(
+                f"Invalid PIFuHD server response: {e}",
+                code="PIFUHD_ERROR",
                 status_code=500,
             ) from e
 

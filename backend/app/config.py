@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     avatar_mode: str = Field(default="stub", alias="AVATAR_MODE")
     runpod_api_key: str | None = Field(default=None, alias="RUNPOD_API_KEY")
     runpod_endpoint_id: str | None = Field(default=None, alias="RUNPOD_ENDPOINT_ID")
+    local_inference_url: str = Field(
+        default="http://localhost:8090",
+        alias="LOCAL_INFERENCE_URL",
+    )
 
     @field_validator("cors_origins", mode="before")
     @classmethod
