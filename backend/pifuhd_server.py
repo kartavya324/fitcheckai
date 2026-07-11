@@ -24,17 +24,120 @@ def check_setup():
         raise RuntimeError("Model weights not found. Run run_windows.bat first.")
 
 
+def remove_background(image_path: str, output_path: str) -> str:
+    """
+    Remove background from person photo using rembg with human segmentation model.
+    Cleans up small disconnected regions (hats, hands, objects near the person).
+    Falls back to original if rembg not available.
+    """
+    try:
+        from rembg import remove, new_session
+        from PIL import Image
+        import io
+        import numpy as np
+
+        # Use the human segmentation model specifically
+        # 'u2net_human_seg' is trained specifically for people
+        session = new_session('u2net_human_seg')
+
+        with open(image_path, "rb") as f:
+            input_data = f.read()
+
+        output_data = remove(input_data, session=session)
+
+        img = Image.open(io.BytesIO(output_data)).convert("RGBA")
+
+        # Get alpha mask
+        alpha = np.array(img)[:, :, 3]
+
+        # Clean up small disconnected regions
+        # Keep only the largest connected component (the person)
+        from scipy import ndimage
+        labeled, num_features = ndimage.label(alpha > 128)
+        if num_features > 1:
+            # Find largest component
+            sizes = ndimage.sum(
+                alpha > 128, labeled, range(1, num_features + 1)
+            )
+            largest = np.argmax(sizes) + 1
+            # Zero out everything except largest component
+            clean_alpha = np.zeros_like(alpha)
+            clean_alpha[labeled == largest] = alpha[labeled == largest]
+            # Put back into image
+            img_array = np.array(img)
+            img_array[:, :, 3] = clean_alpha
+            img = Image.fromarray(img_array)
+            print(f"Removed {num_features - 1} floating fragments")
+
+        # White background
+        background = Image.new("RGB", img.size, (255, 255, 255))
+        background.paste(img, mask=img.split()[3])
+        background.save(output_path, "JPEG", quality=95)
+
+        print("Background removed with human segmentation model")
+        return output_path
+
+    except ImportError as e:
+        print(f"Missing package: {e}")
+        print("Installing rembg with human seg model...")
+        import subprocess as _sp
+        _sp.run([
+            sys.executable, "-m", "pip", "install",
+            "rembg[gpu]", "onnxruntime-gpu", "scipy"
+        ])
+        # Retry after install
+        return remove_background(image_path, output_path)
+    except Exception as e:
+        print(f"Background removal failed: {e}")
+        import traceback as _tb
+        _tb.print_exc()
+        return image_path
+
+
+def preprocess_image(image_path: str, output_path: str) -> str:
+    """
+    Resize and center the person for better PIFuHD results.
+    """
+    from PIL import Image, ImageOps
+
+    img = Image.open(image_path).convert("RGB")
+
+    # Resize to square 512x512 with padding
+    target_size = 512
+    img.thumbnail((target_size, target_size), Image.LANCZOS)
+
+    # Pad to square with white background
+    padded = Image.new("RGB", (target_size, target_size), (255, 255, 255))
+    offset = (
+        (target_size - img.width) // 2,
+        (target_size - img.height) // 2,
+    )
+    padded.paste(img, offset)
+    padded.save(output_path, "JPEG", quality=95)
+
+    print(f"Preprocessed image: {img.size} -> {target_size}x{target_size}")
+    return output_path
+
+
 def run_pifuhd(image_path: str, output_dir: str) -> str:
     input_dir = Path(output_dir) / "input"
     input_dir.mkdir(parents=True, exist_ok=True)
+
+    # Preprocess first
+    preprocessed_path = str(input_dir / "preprocessed.jpg")
+    preprocess_image(image_path, preprocessed_path)
+
+    # Then remove background
     dest = input_dir / "person.jpg"
-    shutil.copy2(image_path, str(dest))
+    cleaned_path = remove_background(preprocessed_path, str(dest))
+    if cleaned_path != str(dest):
+        shutil.copy2(cleaned_path, str(dest))
 
     # Write bounding rect file for --use_rect mode
     from PIL import Image
-    with Image.open(image_path) as img:
+    with Image.open(str(dest)) as img:
         width, height = img.size
-    
+
     rect_path = input_dir / "person_rect.txt"
     with open(rect_path, "w") as f:
         f.write(f"0 0 {width} {height}\n")
@@ -42,46 +145,328 @@ def run_pifuhd(image_path: str, output_dir: str) -> str:
     out_dir = Path(output_dir) / "result"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    cmd = [
-        sys.executable, "-m", "apps.simple_test",
-        "--input_path", str(input_dir),
-        "--out_path", str(out_dir),
-        "--resolution", "256",
-        "--use_rect",
-    ]
-
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = "0"
 
-    result = subprocess.run(
-        cmd,
-        cwd=str(PIFUHD_DIR),
-        capture_output=True,
-        text=True,
-        timeout=600,
-        env=env,
+    # Try resolutions in descending order.
+    # 512 needs ~3GB contiguous RAM for marching cubes, 384 ~1.3GB, 256 ~384MB.
+    # PIFuHD exits 0 even when marching cubes OOMs (MemoryError is caught
+    # internally), so we must check for the .obj file after each attempt.
+    resolutions = ["512", "384", "256"]
+    last_result = None
+
+    for res in resolutions:
+        cmd = [
+            sys.executable, "-m", "apps.simple_test",
+            "--input_path", str(input_dir),
+            "--out_path", str(out_dir),
+            "--resolution", res,
+            "--use_rect",
+        ]
+        print(f"Running PIFuHD at resolution {res}...", flush=True)
+
+        last_result = subprocess.run(
+            cmd,
+            cwd=str(PIFUHD_DIR),
+            capture_output=True,
+            text=True,
+            timeout=600,
+            env=env,
+        )
+
+        # Check for OBJ output (the real success indicator)
+        obj_files = list(out_dir.rglob("*.obj"))
+
+        if obj_files:
+            print(f"PIFuHD succeeded at resolution {res}: {obj_files[0]}")
+            return str(obj_files[0])
+
+        # No .obj produced — diagnose why
+        stdout_lower = last_result.stdout.lower()
+        stderr_lower = last_result.stderr.lower()
+        combined = stdout_lower + stderr_lower
+
+        if "unable to allocate" in combined or "out of memory" in combined:
+            print(f"Memory OOM at resolution {res} — trying lower...",
+                  flush=True)
+            # Clean up partial output before retry
+            for f in out_dir.rglob("*"):
+                if f.is_file():
+                    f.unlink()
+            continue
+        elif last_result.returncode != 0:
+            # Non-OOM process failure — don't retry
+            print(f"PIFuHD failed at resolution {res} (exit {last_result.returncode})",
+                  flush=True)
+            break
+        else:
+            # Exit 0 but no .obj and not OOM — unknown failure, try lower
+            print(f"PIFuHD exited 0 at resolution {res} but produced no .obj, "
+                  f"trying lower...", flush=True)
+            continue
+
+    # All resolutions exhausted or non-recoverable failure
+    raise RuntimeError(
+        f"PIFuHD produced no .obj file after trying resolutions {resolutions}.\n"
+        f"STDOUT: {last_result.stdout}\nSTDERR: {last_result.stderr}"
     )
 
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"PIFuHD failed.\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
-        )
 
-    obj_files = list(out_dir.rglob("*.obj"))
-    if not obj_files:
-        raise RuntimeError(
-            f"PIFuHD produced no .obj file.\n"
-            f"STDOUT: {result.stdout}\nSTDERR: {result.stderr}"
-        )
+def recolor_mesh_from_image(mesh, image_path: str, rect: list):
+    """
+    Re-derive vertex colors by projecting each vertex back onto the source
+    image using PIFuHD's orthographic NDC coordinate system.
 
-    return str(obj_files[0])
+    This lets us later swap `image_path` for a virtual try-on result and
+    transfer its colors onto the 3D mesh.
+
+    Coordinate pipeline (from EvalDataset.py → recon.py → convert_to_glb):
+      1. PIFuHD outputs vertices in NDC space [-1,1]³ with Y flipped
+         (calib = diag(1,-1,1,1)), relative to the *cropped* image.
+      2. convert_to_glb applies a 180° Y-axis rotation (x→-x, z→-z).
+      3. To project back: undo the rotation, then map NDC → pixel.
+
+    Args:
+        mesh:       trimesh.Trimesh — the post-cleanup mesh (already rotated
+                    by π around Y in convert_to_glb)
+        image_path: path to the original input photo (the one before preprocessing)
+        rect:       [x, y, w, h] from person_rect.txt
+
+    Returns:
+        The same mesh object, with vertex colors overwritten where the
+        projection is valid.
+    """
+    import trimesh
+    import numpy as np
+    from PIL import Image
+    from scipy.ndimage import map_coordinates
+    from numpy.linalg import inv
+
+    print(f"Recoloring mesh from image: {image_path}", flush=True)
+    print(f"  rect: {rect}", flush=True)
+
+    # Load source image
+    img_pil = Image.open(image_path).convert("RGB")
+    img = np.array(img_pil)  # (H, W, 3)
+    img_h, img_w = img.shape[:2]
+    print(f"  Source image size: {img_w}×{img_h}", flush=True)
+
+    verts = mesh.vertices.copy()  # (N, 3) — in post-rotation space
+    n_verts = len(verts)
+
+    # ── Step 1: Undo the π rotation around Y that convert_to_glb applied ──
+    # rotation_matrix(π, [0,1,0]) = diag(-1, 1, -1), so invert: x→-x, z→-z
+    verts_ndc = verts.copy()
+    verts_ndc[:, 0] *= -1  # undo X flip
+    verts_ndc[:, 2] *= -1  # undo Z flip
+    # Now verts_ndc are back in PIFuHD's output NDC space
+
+    # ── Step 2: NDC → pixel coordinates ──
+    # We mirror the normalization math from EvalDataset.py, just inverted.
+    # From EvalDataset.py:
+    #   scale_im2ndc = 1.0 / float(w // 2)
+    #   scale = w / rect[2]
+    #   trans_mat = np.identity(4)
+    #   trans_mat *= scale
+    #   trans_mat[3, 3] = 1.0
+    #   trans_mat[0, 3] = -scale * (rect[0] + rect[2] // 2 - w // 2) * scale_im2ndc
+    #   trans_mat[1, 3] = scale * (rect[1] + rect[3] // 2 - h // 2) * scale_im2ndc
+    # where w, h are original image dimensions.
+    scale_im2ndc = 1.0 / float(img_w // 2)
+    scale = img_w / rect[2]
+    
+    trans_mat = np.identity(4)
+    trans_mat *= scale
+    trans_mat[3, 3] = 1.0
+    trans_mat[0, 3] = -scale * (rect[0] + rect[2] // 2 - img_w // 2) * scale_im2ndc
+    trans_mat[1, 3] = scale * (rect[1] + rect[3] // 2 - img_h // 2) * scale_im2ndc
+    
+    trans_mat_inv = inv(trans_mat)
+    
+    # Vertices in homogeneous coordinates
+    verts_homo = np.concatenate([verts_ndc, np.ones((n_verts, 1))], axis=1)
+    
+    # Map back to original image normalized space (where horizontal extent is [-1, 1])
+    verts_orig_norm = np.matmul(verts_homo, trans_mat_inv.T)[:, :3]
+    
+    # Convert original image normalized space to pixel coordinates
+    px = (verts_orig_norm[:, 0] + 1.0) / 2.0 * img_w
+    py = img_h / 2.0 - verts_orig_norm[:, 1] * (img_w / 2.0)
+
+    # ── Step 3: Compute vertex normals for front-face test ──
+    # In NDC space, the camera looks along -Z, so front-facing = normal · (0,0,1) > 0
+    # (PIFuHD's coordinate system has camera at +Z looking at -Z)
+    try:
+        # Recompute normals in NDC space
+        ndc_mesh = trimesh.Trimesh(
+            vertices=verts_ndc, faces=mesh.faces, process=False
+        )
+        normals = ndc_mesh.vertex_normals  # (N, 3)
+        front_facing = normals[:, 2] > 0  # normal Z > 0 = facing camera
+    except Exception as e:
+        print(f"  Normal computation failed: {e}, treating all as front-facing")
+        front_facing = np.ones(n_verts, dtype=bool)
+
+    # ── Step 4: Determine which vertices project within image bounds ──
+    in_bounds = (
+        (px >= 0) & (px < img_w) &
+        (py >= 0) & (py < img_h)
+    )
+    valid = front_facing & in_bounds
+    n_valid = valid.sum()
+    n_front = front_facing.sum()
+    n_inbounds = in_bounds.sum()
+    print(f"  Vertices: {n_verts} total, {n_front} front-facing, "
+          f"{n_inbounds} in-bounds, {n_valid} valid for recoloring", flush=True)
+
+    # ── Step 5: Sample colors from the image ──
+    # Use scipy.ndimage.map_coordinates for bilinear interpolation
+    # It expects (row, col) = (py, px)
+    # Start from existing vertex colors as fallback
+    if hasattr(mesh.visual, 'vertex_colors') and mesh.visual.vertex_colors is not None:
+        colors = mesh.visual.vertex_colors[:, :3].copy().astype(np.float64)
+        print(f"  Using existing vertex colors as fallback for back-facing vertices")
+    else:
+        colors = np.full((n_verts, 3), 128, dtype=np.float64)  # grey fallback
+        print(f"  No existing vertex colors — using grey fallback")
+
+    if n_valid > 0:
+        valid_px = px[valid]
+        valid_py = py[valid]
+
+        # Sample each channel with bilinear interpolation
+        for c in range(3):
+            channel = img[:, :, c].astype(np.float64)  # (H, W)
+            sampled = map_coordinates(
+                channel,
+                [valid_py, valid_px],  # (row, col)
+                order=1,               # bilinear
+                mode='nearest',
+            )
+            colors[valid, c] = sampled
+
+    # ── Step 6: Apply colors back to the mesh ──
+    colors_uint8 = np.clip(colors, 0, 255).astype(np.uint8)
+    # Add alpha channel (fully opaque)
+    rgba = np.column_stack([colors_uint8, np.full(n_verts, 255, dtype=np.uint8)])
+    mesh.visual = trimesh.visual.ColorVisuals(mesh=mesh, vertex_colors=rgba)
+
+    print(f"  Recoloring complete: {n_valid}/{n_verts} vertices recolored",
+          flush=True)
+    return mesh
 
 
 def convert_to_glb(obj_path: str, output_dir: str) -> str:
     import trimesh
+    import numpy as np
+
     glb_path = str(Path(output_dir) / "avatar.glb")
-    mesh = trimesh.load(obj_path, force="mesh")
+
+    # Load mesh preserving all attributes
+    mesh = trimesh.load(obj_path, process=False)
+
+    # If Scene, get largest geometry
+    if isinstance(mesh, trimesh.Scene):
+        geometries = list(mesh.geometry.values())
+        if not geometries:
+            raise RuntimeError("No geometry in loaded mesh")
+        # Pick largest by vertex count
+        mesh = max(geometries, key=lambda g: len(g.vertices))
+        print(f"Extracted largest geometry from scene")
+
+    print(f"Mesh loaded: {len(mesh.vertices)} vertices, "
+          f"{len(mesh.faces)} faces")
+
+    # Split into connected components and keep only the largest
+    # This removes floating fragments (the hat, debris, etc)
+    try:
+        components = mesh.split(only_watertight=False)
+        if len(components) > 1:
+            print(f"Found {len(components)} components, "
+                  f"keeping largest...")
+            # Sort by face count, keep largest
+            components_sorted = sorted(
+                components,
+                key=lambda c: len(c.faces),
+                reverse=True
+            )
+            main_mesh = components_sorted[0]
+            print(f"Main mesh: {len(main_mesh.faces)} faces")
+            print(f"Removed components: "
+                  f"{[len(c.faces) for c in components_sorted[1:]]}")
+            mesh = main_mesh
+        else:
+            print("Single component mesh, no cleanup needed")
+    except Exception as e:
+        print(f"Component split failed: {e}, using full mesh")
+
+    # ── Laplacian smoothing to reduce surface noise ──
+    # Preserve vertex colors through smoothing (it only moves vertices)
+    saved_colors = None
+    if hasattr(mesh.visual, 'vertex_colors') and \
+       mesh.visual.vertex_colors is not None:
+        saved_colors = mesh.visual.vertex_colors.copy()
+
+    try:
+        pre_smooth_verts = len(mesh.vertices)
+        trimesh.smoothing.filter_laplacian(
+            mesh, iterations=3, lamb=0.5, implicit_time_integration=False
+        )
+        print(f"Laplacian smoothing applied (3 iterations, λ=0.5), "
+              f"{pre_smooth_verts} vertices")
+    except Exception as e:
+        print(f"Laplacian smoothing failed: {e}, skipping")
+
+    # Restore vertex colors if smoothing lost them
+    if saved_colors is not None:
+        if not hasattr(mesh.visual, 'vertex_colors') or \
+           mesh.visual.vertex_colors is None or \
+           len(mesh.visual.vertex_colors) != len(mesh.vertices):
+            # Colors lost or mismatched — reapply saved colors
+            if len(saved_colors) == len(mesh.vertices):
+                mesh.visual = trimesh.visual.ColorVisuals(
+                    mesh=mesh, vertex_colors=saved_colors
+                )
+                print("Restored vertex colors after smoothing")
+            else:
+                print(f"Color count mismatch after smoothing: "
+                      f"{len(saved_colors)} vs {len(mesh.vertices)}")
+        else:
+            print("Vertex colors preserved through smoothing")
+
+    # Fix orientation - rotate to face forward (+Z direction)
+    rotation = trimesh.transformations.rotation_matrix(
+        np.pi, [0, 1, 0]
+    )
+    mesh.apply_transform(rotation)
+
+    # Ensure vertex colors exist
+    if not hasattr(mesh.visual, 'vertex_colors') or \
+       mesh.visual.vertex_colors is None:
+        print("No vertex colors, applying skin tone fallback")
+        vertex_count = len(mesh.vertices)
+        skin = np.array([200, 160, 120, 255], dtype=np.uint8)
+        colors = np.tile(skin, (vertex_count, 1))
+        mesh.visual = trimesh.visual.ColorVisuals(
+            mesh=mesh, vertex_colors=colors
+        )
+    else:
+        print(f"Vertex colors: {mesh.visual.vertex_colors.shape}")
+
+    # ── Quadric decimation to remove jagged high-freq noise ──
+    # Reduce to 70% of faces while preserving overall shape
+    try:
+        original_faces = len(mesh.faces)
+        target_faces = int(original_faces * 0.7)
+        mesh = mesh.simplify_quadric_decimation(face_count=target_faces)
+        print(f"Decimation: {original_faces} → {len(mesh.faces)} faces "
+              f"({len(mesh.faces)/original_faces*100:.0f}%)")
+    except Exception as e:
+        print(f"Decimation failed: {e}, skipping")
+
     mesh.export(glb_path)
+    size = Path(glb_path).stat().st_size
+    print(f"Exported GLB: {size} bytes")
     return glb_path
 
 
@@ -109,6 +494,13 @@ def generate():
             return jsonify({"error": "image_base64 required"}), 400
 
         image_bytes = base64.b64decode(data["image_base64"])
+        
+        # Read from environment variable or query parameters
+        recolor_debug = (
+            os.environ.get("RECOLOR_DEBUG", "").lower() == "true" or
+            request.args.get("recolor_debug", "").lower() == "true" or
+            request.args.get("RECOLOR_DEBUG", "").lower() == "true"
+        )
 
         with tempfile.TemporaryDirectory() as tmp:
             img_path = os.path.join(tmp, "input.jpg")
@@ -124,10 +516,64 @@ def generate():
             glb_bytes = open(glb_path, "rb").read()
             glb_b64 = base64.b64encode(glb_bytes).decode()
 
-            return jsonify({
+            response_data = {
                 "glb_base64": glb_b64,
                 "size_bytes": len(glb_bytes),
-            })
+            }
+
+            # ── Optional recolor debug: re-derive colors from original photo ──
+            if recolor_debug:
+                try:
+                    import trimesh
+                    print("RECOLOR_DEBUG=true — producing recolored GLB...",
+                          flush=True)
+
+                    # Parse rect from the person_rect.txt generated by PIFuHD script
+                    input_dir = Path(tmp) / "input"
+                    rect_file = input_dir / "person_rect.txt"
+
+                    rect = [0, 0, 512, 512]  # fallback
+                    if rect_file.exists():
+                        parts = rect_file.read_text().strip().split()
+                        rect = [int(x) for x in parts[:4]]
+
+                    # Load the post-cleanup mesh from the normal GLB
+                    recolor_mesh = trimesh.load(glb_path, process=False)
+                    if isinstance(recolor_mesh, trimesh.Scene):
+                        geoms = list(recolor_mesh.geometry.values())
+                        recolor_mesh = max(geoms, key=lambda g: len(g.vertices))
+
+                    # Recolor from the original input photo (img_path) instead of person.jpg
+                    recolor_mesh = recolor_mesh_from_image(
+                        recolor_mesh, img_path, rect
+                    )
+
+                    # Export recolored GLB
+                    recolored_glb_path = str(Path(tmp) / "avatar_recolored.glb")
+                    recolor_mesh.export(recolored_glb_path)
+                    recolored_size = Path(recolored_glb_path).stat().st_size
+                    print(f"Recolored GLB: {recolored_size} bytes", flush=True)
+
+                    recolored_bytes = open(recolored_glb_path, "rb").read()
+                    response_data["recolored_glb_base64"] = base64.b64encode(
+                        recolored_bytes
+                    ).decode()
+                    response_data["recolored_size_bytes"] = len(recolored_bytes)
+
+                    # Copy to persistent workspace folder for manual verification
+                    workspace_dir = Path("c:/Users/karta/Desktop/Projects/fitcheckai/backend")
+                    if workspace_dir.exists():
+                        shutil.copy2(glb_path, str(workspace_dir / "test_avatar_output.glb"))
+                        shutil.copy2(recolored_glb_path, str(workspace_dir / "test_avatar_recolored.glb"))
+                        print(f"Copied GLB files to workspace directory {workspace_dir} for visual verification.", flush=True)
+
+                except Exception as e:
+                    print(f"RECOLOR_DEBUG failed: {e}", flush=True)
+                    import traceback as _tb
+                    _tb.print_exc()
+                    response_data["recolor_error"] = str(e)
+
+            return jsonify(response_data)
 
     except Exception as e:
         tb = traceback.format_exc()

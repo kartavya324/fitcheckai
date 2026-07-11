@@ -264,12 +264,23 @@ export interface AvatarCreateResponse {
   status: string;
 }
 
+export interface DetectedColor {
+  hex: string;
+  percentage: number;
+}
+
+export interface AvatarAnalysis {
+  dominant_colors: DetectedColor[];
+  face_thumbnail_url: string | null;
+}
+
 export interface AvatarStatusResponse {
   job_id: string;
   status: string;
   progress: number;
   stage: string;
   avatar_url: string | null;
+  analysis: AvatarAnalysis | null;
 }
 
 export async function createAvatar(imageFile: File): Promise<AvatarCreateResponse> {

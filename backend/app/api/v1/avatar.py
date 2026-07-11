@@ -92,9 +92,21 @@ def get_avatar_status(job_id: str):
 
     progress = get_avatar_progress(job_id)
     avatar_url = None
+    analysis = None
 
     if job.status == JobStatus.COMPLETED and job.result_path:
         avatar_url = f"{settings.public_base_url}/files/{job.result_path}"
+
+    # Include photo analysis data when available
+    if job.metadata and "analysis" in job.metadata:
+        raw_analysis = job.metadata["analysis"]
+        face_url = None
+        if raw_analysis.get("face_thumbnail_path"):
+            face_url = f"{settings.public_base_url}/files/{raw_analysis['face_thumbnail_path']}"
+        analysis = {
+            "dominant_colors": raw_analysis.get("dominant_colors", []),
+            "face_thumbnail_url": face_url,
+        }
 
     return {
         "job_id": job_id,
@@ -102,4 +114,5 @@ def get_avatar_status(job_id: str):
         "progress": progress.get("pct", job.progress or 0),
         "stage": progress.get("stage", job.stage or ""),
         "avatar_url": avatar_url,
+        "analysis": analysis,
     }

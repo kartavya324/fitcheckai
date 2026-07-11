@@ -9,6 +9,10 @@ pip install torch==2.5.1+cu118 torchvision==0.20.1+cu118 --index-url https://dow
 
 pip install -r requirements.txt
 pip install flask flask-cors trimesh
+pip install rembg onnxruntime
+pip install scipy
+pip install "rembg[gpu]"
+pip install onnxruntime-gpu || pip install onnxruntime
 
 echo Installing PIFuHD...
 if not exist pifuhd (
@@ -40,5 +44,22 @@ else:
     print('Already downloaded.')
 "
 
+echo Downloading Haar cascade frontal face xml...
+python -c "
+import requests, os
+from pathlib import Path
+url = 'https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_default.xml'
+path = Path('assets/haarcascade_frontalface_default.xml')
+path.parent.mkdir(parents=True, exist_ok=True)
+if not path.exists():
+    print('Downloading...')
+    r = requests.get(url)
+    path.write_bytes(r.content)
+    print('Done!')
+else:
+    print('Already downloaded.')
+"
+
 echo Setup complete!
 pause
+

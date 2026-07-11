@@ -56,6 +56,25 @@ class AvatarJobRunner:
                 on_progress=on_progress,
             )
 
+            # ── Run photo analysis (clothing colors + face thumbnail) ──
+            analysis_data = {}
+            try:
+                if on_progress:
+                    on_progress(92, "Analyzing clothing colors...")
+                from app.services.avatar_analysis_service import analyze_person_image
+                from app.config import get_settings
+                settings = get_settings()
+                analysis_dir = str(settings.storage_root / "avatars" / "analysis")
+                analysis_data = await asyncio.to_thread(
+                    analyze_person_image,
+                    person_image_path,
+                    session_id,
+                    analysis_dir,
+                )
+                logger.info(f"Photo analysis complete: {len(analysis_data.get('dominant_colors', []))} colors")
+            except Exception as e:
+                logger.warning(f"Photo analysis failed (non-fatal): {e}", exc_info=True)
+
             # Mark as completed
             job = self._repo.get(job_id)
             if job:
@@ -64,6 +83,8 @@ class AvatarJobRunner:
                 job.progress = 100
                 job.result_path = result_path
                 job.stage = None
+                job.metadata = job.metadata or {}
+                job.metadata["analysis"] = analysis_data
                 job.completed_at = datetime.now(UTC)
                 job.updated_at = datetime.now(UTC)
                 self._repo.update(job)

@@ -12,7 +12,9 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { createAvatar, getAvatarStatus } from "@/lib/api";
+import type { AvatarAnalysis } from "@/lib/api";
 import { AvatarViewer3D } from "@/components/AvatarViewer3D";
+import { DetectedDetailsPanel } from "@/components/DetectedDetailsPanel";
 
 export const Route = createFileRoute("/avatar")({
   head: () => ({
@@ -38,6 +40,7 @@ function AvatarPage() {
   const [progress, setProgress] = useState(0);
   const [stage, setStage] = useState("Starting...");
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+  const [analysis, setAnalysis] = useState<AvatarAnalysis | null>(null);
   const [error, setError] = useState<string | null>(null);
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -55,6 +58,7 @@ function AvatarPage() {
 
         if (res.status === "completed") {
           setAvatarUrl(res.avatar_url);
+          setAnalysis(res.analysis ?? null);
           setPhase("complete");
           if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
         } else if (res.status === "failed") {
@@ -100,6 +104,7 @@ function AvatarPage() {
     setProgress(0);
     setStage("Starting...");
     setAvatarUrl(null);
+    setAnalysis(null);
     setError(null);
   }, []);
 
@@ -129,8 +134,12 @@ function AvatarPage() {
     [handleFileSelect],
   );
 
+  // Widen layout when showing the complete phase (3D viewer + details panel)
+  const isComplete = phase === "complete" && avatarUrl;
+  const maxWidth = isComplete ? "max-w-6xl" : "max-w-3xl";
+
   return (
-    <section className="mx-auto max-w-3xl px-4 py-12 sm:px-6 lg:px-8">
+    <section className={`mx-auto ${maxWidth} px-4 py-12 sm:px-6 lg:px-8`}>
       {phase === "upload" && (
         <UploadPhase
           previewUrl={previewUrl}
@@ -149,8 +158,8 @@ function AvatarPage() {
         <ProcessingPhase progress={progress} stage={stage} />
       )}
 
-      {phase === "complete" && avatarUrl && (
-        <CompletePhase avatarUrl={avatarUrl} onReset={handleReset} />
+      {isComplete && (
+        <CompletePhase avatarUrl={avatarUrl} analysis={analysis} onReset={handleReset} />
       )}
 
       {phase === "error" && (
@@ -345,9 +354,11 @@ function ProcessingPhase({
 
 function CompletePhase({
   avatarUrl,
+  analysis,
   onReset,
 }: {
   avatarUrl: string;
+  analysis: AvatarAnalysis | null;
   onReset: () => void;
 }) {
   return (
@@ -364,12 +375,19 @@ function CompletePhase({
         </p>
       </div>
 
-      {/* 3D Viewer */}
-      <AvatarViewer3D glbUrl={avatarUrl} height={520} autoRotate />
+      {/* Two-column layout: 3D Viewer + Detected Details */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_280px]">
+        {/* Left: 3D Viewer */}
+        <div>
+          <AvatarViewer3D glbUrl={avatarUrl} height={520} autoRotate />
+          <p className="mt-3 text-center text-xs text-muted-foreground">
+            Drag to rotate · Scroll to zoom
+          </p>
+        </div>
 
-      <p className="mt-3 text-center text-xs text-muted-foreground">
-        Drag to rotate · Scroll to zoom
-      </p>
+        {/* Right: Detected Details Panel */}
+        <DetectedDetailsPanel analysis={analysis} />
+      </div>
 
       {/* Actions */}
       <div className="mt-6 flex gap-3">

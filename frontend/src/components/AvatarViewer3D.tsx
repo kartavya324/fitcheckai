@@ -33,7 +33,7 @@ export function AvatarViewer3D({
     // Camera
     const width = container.clientWidth;
     const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 100);
-    camera.position.set(0, 1.5, 3);
+    camera.position.set(0, 1.2, 2.5);
 
     // Renderer
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -44,17 +44,25 @@ export function AvatarViewer3D({
     container.appendChild(renderer.domElement);
 
     // Lighting
-    const ambient = new THREE.AmbientLight(0xffffff, 0.6);
+    const ambient = new THREE.AmbientLight(0xffffff, 1.2);
     scene.add(ambient);
 
-    const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
-    dirLight.position.set(2, 4, 2);
-    dirLight.castShadow = true;
-    scene.add(dirLight);
+    const frontLight = new THREE.DirectionalLight(0xffffff, 2.0);
+    frontLight.position.set(0, 2, 4);
+    frontLight.castShadow = true;
+    scene.add(frontLight);
 
-    const fillLight = new THREE.DirectionalLight(0x8888ff, 0.3);
-    fillLight.position.set(-2, 2, -2);
-    scene.add(fillLight);
+    const leftLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    leftLight.position.set(-3, 2, 1);
+    scene.add(leftLight);
+
+    const rightLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    rightLight.position.set(3, 2, 1);
+    scene.add(rightLight);
+
+    const topLight = new THREE.DirectionalLight(0xffffff, 0.5);
+    topLight.position.set(0, 5, 0);
+    scene.add(topLight);
 
     // Controls
     const controls = new OrbitControls(camera, renderer.domElement);
@@ -65,7 +73,7 @@ export function AvatarViewer3D({
     controls.enableZoom = true;
     controls.minDistance = 1;
     controls.maxDistance = 8;
-    controls.target.set(0, 1, 0);
+    controls.target.set(0, 0.8, 0);
 
     // Load .glb
     const loader = new GLTFLoader();
@@ -81,6 +89,18 @@ export function AvatarViewer3D({
         const maxDim = Math.max(size.x, size.y, size.z);
         const scale = 2.0 / maxDim;
         model.scale.setScalar(scale);
+        model.traverse((child) => {
+          if (child instanceof THREE.Mesh) {
+            if (child.material) {
+              const mat = child.material as THREE.MeshStandardMaterial;
+              mat.needsUpdate = true;
+              // Boost vertex color visibility
+              if (mat.vertexColors) {
+                mat.color = new THREE.Color(1, 1, 1);
+              }
+            }
+          }
+        });
         scene.add(model);
         setLoading(false);
       },
