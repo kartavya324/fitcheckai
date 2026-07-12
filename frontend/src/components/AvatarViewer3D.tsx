@@ -43,26 +43,34 @@ export function AvatarViewer3D({
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     container.appendChild(renderer.domElement);
 
-    // Lighting
-    const ambient = new THREE.AmbientLight(0xffffff, 1.2);
-    scene.add(ambient);
-
-    const frontLight = new THREE.DirectionalLight(0xffffff, 2.0);
-    frontLight.position.set(0, 2, 4);
-    frontLight.castShadow = true;
-    scene.add(frontLight);
-
-    const leftLight = new THREE.DirectionalLight(0xffffff, 0.8);
-    leftLight.position.set(-3, 2, 1);
-    scene.add(leftLight);
-
-    const rightLight = new THREE.DirectionalLight(0xffffff, 0.8);
-    rightLight.position.set(3, 2, 1);
-    scene.add(rightLight);
-
-    const topLight = new THREE.DirectionalLight(0xffffff, 0.5);
-    topLight.position.set(0, 5, 0);
-    scene.add(topLight);
+    // Strong ambient so vertex colors are always visible
+    const ambient = new THREE.AmbientLight(0xffffff, 2.5)
+    scene.add(ambient)
+    
+    // Front key light
+    const frontLight = new THREE.DirectionalLight(0xffffff, 1.5)
+    frontLight.position.set(0, 3, 5)
+    scene.add(frontLight)
+    
+    // Left fill
+    const leftLight = new THREE.DirectionalLight(0xffffff, 0.8)
+    leftLight.position.set(-4, 2, 2)
+    scene.add(leftLight)
+    
+    // Right fill  
+    const rightLight = new THREE.DirectionalLight(0xffffff, 0.8)
+    rightLight.position.set(4, 2, 2)
+    scene.add(rightLight)
+    
+    // Back light to prevent completely dark back
+    const backLight = new THREE.DirectionalLight(0xffffff, 0.5)
+    backLight.position.set(0, 2, -5)
+    scene.add(backLight)
+    
+    // Bottom fill to prevent dark feet
+    const bottomLight = new THREE.DirectionalLight(0xffffff, 0.3)
+    bottomLight.position.set(0, -3, 2)
+    scene.add(bottomLight)
 
     // Controls
     const controls = new OrbitControls(camera, renderer.domElement);
@@ -80,37 +88,72 @@ export function AvatarViewer3D({
     loader.load(
       glbUrl,
       (gltf) => {
-        const model = gltf.scene;
-        const box = new THREE.Box3().setFromObject(model);
-        const centre = box.getCenter(new THREE.Vector3());
-        const size = box.getSize(new THREE.Vector3());
-        model.position.sub(centre);
-        model.position.y += size.y / 2;
-        const maxDim = Math.max(size.x, size.y, size.z);
-        const scale = 2.0 / maxDim;
-        model.scale.setScalar(scale);
+        const model = gltf.scene
+        
+        // Centre and scale the model
+        const box = new THREE.Box3().setFromObject(model)
+        const centre = box.getCenter(new THREE.Vector3())
+        const size = box.getSize(new THREE.Vector3())
+        model.position.sub(centre)
+        model.position.y += size.y / 2
+        const maxDim = Math.max(size.x, size.y, size.z)
+        const scale = 2.2 / maxDim
+        model.scale.setScalar(scale)
+        
+        // Fix materials to show vertex colors correctly
         model.traverse((child) => {
-          if (child instanceof THREE.Mesh) {
-            if (child.material) {
-              const mat = child.material as THREE.MeshStandardMaterial;
-              mat.needsUpdate = true;
-              // Boost vertex color visibility
-              if (mat.vertexColors) {
-                mat.color = new THREE.Color(1, 1, 1);
+          if ((child as THREE.Mesh).isMesh) {
+            const mesh = child as THREE.Mesh
+            const materials = Array.isArray(mesh.material)
+              ? mesh.material
+              : [mesh.material]
+            
+            materials.forEach((mat) => {
+              if (mat instanceof THREE.MeshStandardMaterial) {
+                // Enable vertex colors
+                mat.vertexColors = true
+                // White base so vertex colors show at full brightness
+                mat.color = new THREE.Color(1, 1, 1)
+                // Reduce metalness/roughness for better color display
+                mat.metalness = 0
+                mat.roughness = 0.8
+                mat.needsUpdate = true
+              } else {
+                // Replace any non-standard material with one 
+                // that supports vertex colors
+                const newMat = new THREE.MeshStandardMaterial({
+                  vertexColors: true,
+                  color: new THREE.Color(1, 1, 1),
+                  metalness: 0,
+                  roughness: 0.8,
+                })
+                if (Array.isArray(mesh.material)) {
+                  const idx = mesh.material.indexOf(mat)
+                  if (idx >= 0) mesh.material[idx] = newMat
+                } else {
+                  mesh.material = newMat
+                }
               }
-            }
+            })
+            mesh.castShadow = true
+            mesh.receiveShadow = true
           }
-        });
-        scene.add(model);
-        setLoading(false);
+        })
+        
+        scene.add(model)
+        setLoading(false)
       },
-      undefined,
+      (progress) => {
+        // Optional loading progress
+        console.log('Loading:', 
+          Math.round(progress.loaded / progress.total * 100) + '%')
+      },
       (err) => {
-        console.error("GLB load error:", err);
-        setError("Failed to load 3D model");
-        setLoading(false);
+        console.error('GLB load error:', err)
+        setError('Failed to load 3D model')
+        setLoading(false)
       },
-    );
+    )
 
     // Animation
     let animId: number;
