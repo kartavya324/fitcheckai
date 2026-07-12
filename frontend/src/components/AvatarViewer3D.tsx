@@ -20,167 +20,135 @@ export function AvatarViewer3D({
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const container = mountRef.current;
-    if (!container) return;
+    const container = mountRef.current
+    if (!container) return
 
-    setLoading(true);
-    setError(null);
+    setLoading(true)
+    setError(null)
 
-    // Scene
-    const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0xf5f5f0);
+    const width = container.clientWidth
+    const scene = new THREE.Scene()
+    scene.background = new THREE.Color(0xf5f5f0)
 
-    // Camera
-    const width = container.clientWidth;
-    const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 100);
-    camera.position.set(0, 1.2, 2.5);
+    const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 100)
+    camera.position.set(0, 1.0, 2.8)
 
-    // Renderer
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-    renderer.setPixelRatio(window.devicePixelRatio);
-    renderer.setSize(width, height);
-    renderer.shadowMap.enabled = true;
-    renderer.outputColorSpace = THREE.SRGBColorSpace;
-    container.appendChild(renderer.domElement);
+    const renderer = new THREE.WebGLRenderer({ antialias: true })
+    renderer.setPixelRatio(window.devicePixelRatio)
+    renderer.setSize(width, height)
+    renderer.shadowMap.enabled = false
+    // CRITICAL: use NoColorSpace so vertex colors are not 
+    // gamma corrected (which causes the pale/washed look)
+    renderer.outputColorSpace = THREE.LinearSRGBColorSpace
+    renderer.toneMapping = THREE.NoToneMapping
+    container.appendChild(renderer.domElement)
 
-    // Strong ambient so vertex colors are always visible
-    const ambient = new THREE.AmbientLight(0xffffff, 2.5)
+    // Balanced lighting — not too bright (causes washout)
+    // not too dark
+    const ambient = new THREE.AmbientLight(0xffffff, 1.8)
     scene.add(ambient)
-    
-    // Front key light
-    const frontLight = new THREE.DirectionalLight(0xffffff, 1.5)
-    frontLight.position.set(0, 3, 5)
-    scene.add(frontLight)
-    
-    // Left fill
-    const leftLight = new THREE.DirectionalLight(0xffffff, 0.8)
-    leftLight.position.set(-4, 2, 2)
-    scene.add(leftLight)
-    
-    // Right fill  
-    const rightLight = new THREE.DirectionalLight(0xffffff, 0.8)
-    rightLight.position.set(4, 2, 2)
-    scene.add(rightLight)
-    
-    // Back light to prevent completely dark back
-    const backLight = new THREE.DirectionalLight(0xffffff, 0.5)
-    backLight.position.set(0, 2, -5)
+
+    const frontKey = new THREE.DirectionalLight(0xffffff, 1.2)
+    frontKey.position.set(0, 2, 4)
+    scene.add(frontKey)
+
+    const leftFill = new THREE.DirectionalLight(0xffffff, 0.6)
+    leftFill.position.set(-3, 1, 2)
+    scene.add(leftFill)
+
+    const rightFill = new THREE.DirectionalLight(0xffffff, 0.6)
+    rightFill.position.set(3, 1, 2)
+    scene.add(rightFill)
+
+    const backLight = new THREE.DirectionalLight(0xffffff, 0.3)
+    backLight.position.set(0, 1, -4)
     scene.add(backLight)
-    
-    // Bottom fill to prevent dark feet
-    const bottomLight = new THREE.DirectionalLight(0xffffff, 0.3)
-    bottomLight.position.set(0, -3, 2)
-    scene.add(bottomLight)
 
-    // Controls
-    const controls = new OrbitControls(camera, renderer.domElement);
-    controls.enableDamping = true;
-    controls.dampingFactor = 0.05;
-    controls.autoRotate = autoRotate;
-    controls.autoRotateSpeed = 1.5;
-    controls.enableZoom = true;
-    controls.minDistance = 1;
-    controls.maxDistance = 8;
-    controls.target.set(0, 0.8, 0);
+    const controls = new OrbitControls(camera, renderer.domElement)
+    controls.enableDamping = true
+    controls.dampingFactor = 0.05
+    controls.autoRotate = autoRotate
+    controls.autoRotateSpeed = 1.2
+    controls.enableZoom = true
+    controls.minDistance = 0.8
+    controls.maxDistance = 6
+    controls.target.set(0, 0.7, 0)
+    controls.update()
 
-    // Load .glb
-    const loader = new GLTFLoader();
+    const loader = new GLTFLoader()
     loader.load(
       glbUrl,
       (gltf) => {
         const model = gltf.scene
-        
-        // Centre and scale the model
+
+        // Centre and scale
         const box = new THREE.Box3().setFromObject(model)
         const centre = box.getCenter(new THREE.Vector3())
         const size = box.getSize(new THREE.Vector3())
         model.position.sub(centre)
         model.position.y += size.y / 2
         const maxDim = Math.max(size.x, size.y, size.z)
-        const scale = 2.2 / maxDim
-        model.scale.setScalar(scale)
-        
-        // Fix materials to show vertex colors correctly
+        model.scale.setScalar(2.0 / maxDim)
+
+        // Fix all materials to show vertex colors properly
         model.traverse((child) => {
-          if ((child as THREE.Mesh).isMesh) {
-            const mesh = child as THREE.Mesh
-            const materials = Array.isArray(mesh.material)
-              ? mesh.material
-              : [mesh.material]
-            
-            materials.forEach((mat) => {
-              if (mat instanceof THREE.MeshStandardMaterial) {
-                // Enable vertex colors
-                mat.vertexColors = true
-                // White base so vertex colors show at full brightness
-                mat.color = new THREE.Color(1, 1, 1)
-                // Reduce metalness/roughness for better color display
-                mat.metalness = 0
-                mat.roughness = 0.8
-                mat.needsUpdate = true
-              } else {
-                // Replace any non-standard material with one 
-                // that supports vertex colors
-                const newMat = new THREE.MeshStandardMaterial({
-                  vertexColors: true,
-                  color: new THREE.Color(1, 1, 1),
-                  metalness: 0,
-                  roughness: 0.8,
-                })
-                if (Array.isArray(mesh.material)) {
-                  const idx = mesh.material.indexOf(mat)
-                  if (idx >= 0) mesh.material[idx] = newMat
-                } else {
-                  mesh.material = newMat
-                }
-              }
+          if (!(child as THREE.Mesh).isMesh) return
+          const mesh = child as THREE.Mesh
+
+          const fixMaterial = (mat: THREE.Material) => {
+            // Replace with MeshLambertMaterial which renders
+            // vertex colors more accurately than MeshStandard
+            // for this type of reconstruction output
+            const newMat = new THREE.MeshLambertMaterial({
+              vertexColors: true,
+              // White base color so vertex colors show at full value
+              color: new THREE.Color(1, 1, 1),
             })
-            mesh.castShadow = true
-            mesh.receiveShadow = true
+            return newMat
+          }
+
+          if (Array.isArray(mesh.material)) {
+            mesh.material = mesh.material.map(fixMaterial)
+          } else {
+            mesh.material = fixMaterial(mesh.material)
           }
         })
-        
+
         scene.add(model)
         setLoading(false)
       },
-      (progress) => {
-        // Optional loading progress
-        console.log('Loading:', 
-          Math.round(progress.loaded / progress.total * 100) + '%')
-      },
+      undefined,
       (err) => {
         console.error('GLB load error:', err)
         setError('Failed to load 3D model')
         setLoading(false)
-      },
+      }
     )
 
-    // Animation
-    let animId: number;
-    function animate() {
-      animId = requestAnimationFrame(animate);
-      controls.update();
-      renderer.render(scene, camera);
+    let animId: number
+    const animate = () => {
+      animId = requestAnimationFrame(animate)
+      controls.update()
+      renderer.render(scene, camera)
     }
-    animate();
+    animate()
 
-    // Resize
-    function onResize() {
-      const w = container.clientWidth;
-      camera.aspect = w / height;
-      camera.updateProjectionMatrix();
-      renderer.setSize(w, height);
+    const onResize = () => {
+      const w = container.clientWidth
+      camera.aspect = w / height
+      camera.updateProjectionMatrix()
+      renderer.setSize(w, height)
     }
-    window.addEventListener("resize", onResize);
+    window.addEventListener('resize', onResize)
 
     return () => {
-      cancelAnimationFrame(animId);
-      window.removeEventListener("resize", onResize);
-      renderer.dispose();
+      cancelAnimationFrame(animId)
+      window.removeEventListener('resize', onResize)
+      renderer.dispose()
       if (container.contains(renderer.domElement)) {
-        container.removeChild(renderer.domElement);
+        container.removeChild(renderer.domElement)
       }
-    };
+    }
   }, [glbUrl, height, autoRotate]);
 
   return (

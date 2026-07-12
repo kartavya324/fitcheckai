@@ -154,51 +154,22 @@ def run_pifuhd(image_path: str, output_dir: str) -> str:
         sys.executable, "-m", "apps.simple_test",
         "--input_path", str(input_dir),
         "--out_path", str(out_dir),
-        "--loadSize", "1024",
         "--resolution", "512",
         "--use_rect",
     ]
 
-    # Try 512 resolution first, fall back to 384 if OOM
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = "0"
     env["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:256"
 
-    # Try 512 resolution first, fall back to 384 if OOM or Timeout
-    should_retry = False
     try:
         result = subprocess.run(
             cmd, cwd=str(PIFUHD_DIR),
             capture_output=True, text=True,
             timeout=600, env=env,
         )
-        if result.returncode != 0 and (
-            "out of memory" in result.stderr.lower() or
-            "cuda" in result.stderr.lower()
-        ):
-            print("VRAM limit hit, retrying at resolution 384...")
-            should_retry = True
-    except subprocess.TimeoutExpired:
-        print("VRAM execution timed out at resolution 512, retrying at resolution 384...")
-        should_retry = True
-
-    if should_retry:
-        cmd_low = [
-            sys.executable, "-m", "apps.simple_test",
-            "--input_path", str(input_dir),
-            "--out_path", str(out_dir),
-            "--loadSize", "512",
-            "--resolution", "384",
-            "--use_rect",
-        ]
-        try:
-            result = subprocess.run(
-                cmd_low, cwd=str(PIFUHD_DIR),
-                capture_output=True, text=True,
-                timeout=600, env=env,
-            )
-        except subprocess.TimeoutExpired as e:
-            raise RuntimeError(f"PIFuHD timed out at resolution 384: {e}")
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(f"PIFuHD timed out at resolution 512: {e}")
 
     if result.returncode != 0:
         raise RuntimeError(
