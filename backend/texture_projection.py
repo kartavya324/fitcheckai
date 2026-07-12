@@ -109,23 +109,7 @@ def project_texture_onto_mesh(
     
     # Smooth vertex colors to reduce noise
     # Average each vertex color with its neighbors
-    try:
-        print("Smoothing vertex colors...")
-        adjacency = mesh.vertex_adjacency_graph
-        smoothed_colors = vertex_colors.copy()
-        for _ in range(2):  # 2 smoothing passes
-            for v_idx in range(len(vertices)):
-                neighbors = list(adjacency.neighbors(v_idx))
-                if neighbors:
-                    neighbor_colors = vertex_colors[neighbors]
-                    smoothed_colors[v_idx] = (
-                        vertex_colors[v_idx] * 0.5 + 
-                        neighbor_colors.mean(axis=0) * 0.5
-                    )
-            vertex_colors = smoothed_colors.copy()
-        print("Color smoothing complete")
-    except Exception as e:
-        print(f"Color smoothing skipped: {e}")
+    # (Removed slow Python loop as requested)
     
     # Convert to uint8 with alpha
     colors_uint8 = (vertex_colors * 255).astype(np.uint8)
