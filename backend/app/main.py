@@ -20,10 +20,6 @@ from app.db import Base, engine
 logger = get_logger(__name__)
 
 async def _keepalive_hf_space() -> None:
-    import asyncio
-    import httpx
-    import logging
-    logger = logging.getLogger(__name__)
     while True:
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:

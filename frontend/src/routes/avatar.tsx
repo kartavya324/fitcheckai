@@ -36,6 +36,8 @@ function AvatarPage() {
   const [phase, setPhase] = useState<Phase>("upload");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [backFile, setBackFile] = useState<File | null>(null);
+  const [backPreview, setBackPreview] = useState<string | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
   const [stage, setStage] = useState("Starting...");
@@ -62,7 +64,10 @@ function AvatarPage() {
           setPhase("complete");
           if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
         } else if (res.status === "failed") {
-          setError("Avatar generation failed. Please try again.");
+          setError(
+            res.error?.message ??
+              "Avatar generation failed. Please try again.",
+          );
           setPhase("error");
           if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
         }
@@ -82,13 +87,22 @@ function AvatarPage() {
     setPreviewUrl(URL.createObjectURL(file));
   }, []);
 
+  const handleBackSelect = useCallback((file: File) => {
+    if (!file.type.startsWith("image/")) return;
+    setBackFile(file);
+    setBackPreview((prev) => {
+      if (prev?.startsWith("blob:")) URL.revokeObjectURL(prev);
+      return URL.createObjectURL(file);
+    });
+  }, []);
+
   const handleGenerate = useCallback(async () => {
     if (!selectedFile) return;
     try {
       setPhase("processing");
       setProgress(0);
       setStage("Starting...");
-      const result = await createAvatar(selectedFile);
+      const result = await createAvatar(selectedFile, backFile);
       setJobId(result.job_id);
     } catch (e) {
       setPhase("error");
@@ -100,6 +114,8 @@ function AvatarPage() {
     setPhase("upload");
     setSelectedFile(null);
     setPreviewUrl(null);
+    setBackFile(null);
+    setBackPreview(null);
     setJobId(null);
     setProgress(0);
     setStage("Starting...");
@@ -151,6 +167,8 @@ function AvatarPage() {
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
           onGenerate={handleGenerate}
+          backPreview={backPreview}
+          onBackSelect={handleBackSelect}
         />
       )}
 
@@ -181,6 +199,8 @@ function UploadPhase({
   onDragLeave,
   onDrop,
   onGenerate,
+  backPreview,
+  onBackSelect,
 }: {
   previewUrl: string | null;
   selectedFile: File | null;
@@ -191,8 +211,11 @@ function UploadPhase({
   onDragLeave: (e: React.DragEvent) => void;
   onDrop: (e: React.DragEvent) => void;
   onGenerate: () => void;
+  backPreview: string | null;
+  onBackSelect: (f: File) => void;
 }) {
   const [showTips, setShowTips] = useState(false);
+  const backInputRef = useRef<HTMLInputElement>(null);
 
   return (
     <motion.div
@@ -318,6 +341,44 @@ function UploadPhase({
             </p>
           </motion.div>
         )}
+      </div>
+
+      {/* Optional back photo — for a real back instead of a synthesized one */}
+      <div className="mt-6 rounded-xl border border-border bg-muted/20 p-4">
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => backInputRef.current?.click()}
+            className="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-dashed border-border bg-card hover:border-foreground/40"
+          >
+            {backPreview ? (
+              <img src={backPreview} alt="Back" className="h-full w-full object-cover" />
+            ) : (
+              <Upload className="h-5 w-5 text-muted-foreground" />
+            )}
+          </button>
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-foreground">
+              Add a back photo{" "}
+              <span className="font-normal text-muted-foreground">(optional)</span>
+            </p>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              {backPreview
+                ? "Back photo added — your avatar's back will use it."
+                : "Same pose, from behind. Gives a real back instead of a synthesized one."}
+            </p>
+          </div>
+          <input
+            ref={backInputRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) onBackSelect(file);
+            }}
+          />
+        </div>
       </div>
 
       {/* Generate button */}

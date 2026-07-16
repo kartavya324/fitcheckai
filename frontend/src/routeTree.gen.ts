@@ -9,17 +9,37 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as WardrobeRouteImport } from './routes/wardrobe'
 import { Route as TryOnRouteImport } from './routes/try-on'
+import { Route as StylistRouteImport } from './routes/stylist'
+import { Route as SizeRouteImport } from './routes/size'
 import { Route as SitemapDotxmlRouteImport } from './routes/sitemap[.]xml'
 import { Route as ResultsRouteImport } from './routes/results'
 import { Route as ProcessingRouteImport } from './routes/processing'
 import { Route as HistoryRouteImport } from './routes/history'
+import { Route as FeedRouteImport } from './routes/feed'
+import { Route as ColorsRouteImport } from './routes/colors'
 import { Route as AvatarRouteImport } from './routes/avatar'
 import { Route as IndexRouteImport } from './routes/index'
 
+const WardrobeRoute = WardrobeRouteImport.update({
+  id: '/wardrobe',
+  path: '/wardrobe',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const TryOnRoute = TryOnRouteImport.update({
   id: '/try-on',
   path: '/try-on',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const StylistRoute = StylistRouteImport.update({
+  id: '/stylist',
+  path: '/stylist',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SizeRoute = SizeRouteImport.update({
+  id: '/size',
+  path: '/size',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SitemapDotxmlRoute = SitemapDotxmlRouteImport.update({
@@ -42,6 +62,16 @@ const HistoryRoute = HistoryRouteImport.update({
   path: '/history',
   getParentRoute: () => rootRouteImport,
 } as any)
+const FeedRoute = FeedRouteImport.update({
+  id: '/feed',
+  path: '/feed',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ColorsRoute = ColorsRouteImport.update({
+  id: '/colors',
+  path: '/colors',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AvatarRoute = AvatarRouteImport.update({
   id: '/avatar',
   path: '/avatar',
@@ -56,78 +86,134 @@ const IndexRoute = IndexRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/avatar': typeof AvatarRoute
+  '/colors': typeof ColorsRoute
+  '/feed': typeof FeedRoute
   '/history': typeof HistoryRoute
   '/processing': typeof ProcessingRoute
   '/results': typeof ResultsRoute
   '/sitemap.xml': typeof SitemapDotxmlRoute
+  '/size': typeof SizeRoute
+  '/stylist': typeof StylistRoute
   '/try-on': typeof TryOnRoute
+  '/wardrobe': typeof WardrobeRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/avatar': typeof AvatarRoute
+  '/colors': typeof ColorsRoute
+  '/feed': typeof FeedRoute
   '/history': typeof HistoryRoute
   '/processing': typeof ProcessingRoute
   '/results': typeof ResultsRoute
   '/sitemap.xml': typeof SitemapDotxmlRoute
+  '/size': typeof SizeRoute
+  '/stylist': typeof StylistRoute
   '/try-on': typeof TryOnRoute
+  '/wardrobe': typeof WardrobeRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/avatar': typeof AvatarRoute
+  '/colors': typeof ColorsRoute
+  '/feed': typeof FeedRoute
   '/history': typeof HistoryRoute
   '/processing': typeof ProcessingRoute
   '/results': typeof ResultsRoute
   '/sitemap.xml': typeof SitemapDotxmlRoute
+  '/size': typeof SizeRoute
+  '/stylist': typeof StylistRoute
   '/try-on': typeof TryOnRoute
+  '/wardrobe': typeof WardrobeRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
     | '/avatar'
+    | '/colors'
+    | '/feed'
     | '/history'
     | '/processing'
     | '/results'
     | '/sitemap.xml'
+    | '/size'
+    | '/stylist'
     | '/try-on'
+    | '/wardrobe'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/avatar'
+    | '/colors'
+    | '/feed'
     | '/history'
     | '/processing'
     | '/results'
     | '/sitemap.xml'
+    | '/size'
+    | '/stylist'
     | '/try-on'
+    | '/wardrobe'
   id:
     | '__root__'
     | '/'
     | '/avatar'
+    | '/colors'
+    | '/feed'
     | '/history'
     | '/processing'
     | '/results'
     | '/sitemap.xml'
+    | '/size'
+    | '/stylist'
     | '/try-on'
+    | '/wardrobe'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AvatarRoute: typeof AvatarRoute
+  ColorsRoute: typeof ColorsRoute
+  FeedRoute: typeof FeedRoute
   HistoryRoute: typeof HistoryRoute
   ProcessingRoute: typeof ProcessingRoute
   ResultsRoute: typeof ResultsRoute
   SitemapDotxmlRoute: typeof SitemapDotxmlRoute
+  SizeRoute: typeof SizeRoute
+  StylistRoute: typeof StylistRoute
   TryOnRoute: typeof TryOnRoute
+  WardrobeRoute: typeof WardrobeRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/wardrobe': {
+      id: '/wardrobe'
+      path: '/wardrobe'
+      fullPath: '/wardrobe'
+      preLoaderRoute: typeof WardrobeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/try-on': {
       id: '/try-on'
       path: '/try-on'
       fullPath: '/try-on'
       preLoaderRoute: typeof TryOnRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/stylist': {
+      id: '/stylist'
+      path: '/stylist'
+      fullPath: '/stylist'
+      preLoaderRoute: typeof StylistRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/size': {
+      id: '/size'
+      path: '/size'
+      fullPath: '/size'
+      preLoaderRoute: typeof SizeRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/sitemap.xml': {
@@ -158,6 +244,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof HistoryRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/feed': {
+      id: '/feed'
+      path: '/feed'
+      fullPath: '/feed'
+      preLoaderRoute: typeof FeedRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/colors': {
+      id: '/colors'
+      path: '/colors'
+      fullPath: '/colors'
+      preLoaderRoute: typeof ColorsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/avatar': {
       id: '/avatar'
       path: '/avatar'
@@ -178,11 +278,16 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AvatarRoute: AvatarRoute,
+  ColorsRoute: ColorsRoute,
+  FeedRoute: FeedRoute,
   HistoryRoute: HistoryRoute,
   ProcessingRoute: ProcessingRoute,
   ResultsRoute: ResultsRoute,
   SitemapDotxmlRoute: SitemapDotxmlRoute,
+  SizeRoute: SizeRoute,
+  StylistRoute: StylistRoute,
   TryOnRoute: TryOnRoute,
+  WardrobeRoute: WardrobeRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

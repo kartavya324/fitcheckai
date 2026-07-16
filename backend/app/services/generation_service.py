@@ -21,10 +21,9 @@ class GenerationService:
         self._storage = storage_service
 
     def _compress_image(self, path: str, max_size: int = 768) -> str:
-        from PIL import Image
+        from PIL import Image, ImageOps
         import tempfile
-        import os
-        img = Image.open(path)
+        img = ImageOps.exif_transpose(Image.open(path))
         if img.mode != 'RGB':
             img = img.convert('RGB')
         if max(img.size) > max_size:
@@ -35,6 +34,63 @@ class GenerationService:
             suffix='.jpg', delete=False, dir=tempfile.gettempdir()
         )
         img.save(tmp.name, 'JPEG', quality=85)
+        tmp.close()
+        return tmp.name
+
+    def _prepare_person(self, path: str, max_size: int = 768) -> str:
+        """
+        Crop a wide/landscape photo to the person so they FILL the frame.
+
+        IDM-VTON resizes inputs toward a portrait target; a landscape photo
+        makes the person tiny with white margins in the output (the "shrink"
+        bug). Cropping to the subject first fixes it regardless of the source
+        photo's aspect ratio. Falls back to plain compression if no person is
+        found. Keeps the original background (IDM-VTON does its own masking).
+        """
+        from PIL import Image, ImageOps
+        import numpy as np
+        import tempfile
+
+        img = ImageOps.exif_transpose(Image.open(path)).convert("RGB")
+        W, H = img.size
+
+        try:
+            from rembg import remove, new_session
+            session = new_session("u2net_human_seg")
+            alpha = np.array(remove(img, session=session).convert("RGBA"))[:, :, 3]
+            ys, xs = np.where(alpha > 128)
+            if len(ys) < 100:
+                raise ValueError("no person found")
+            l, t, r, b = int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())
+        except Exception:
+            return self._compress_image(path, max_size)  # safe fallback
+
+        # Generous margin so we don't clip hair/feet/hands
+        bw, bh = r - l, b - t
+        mx, my = int(bw * 0.18), int(bh * 0.08)
+        l, t = max(0, l - mx), max(0, t - my)
+        r, b = min(W, r + mx), min(H, b + my)
+
+        # Widen a too-narrow crop toward a 3:4 portrait so the person isn't
+        # stretched when IDM-VTON forces its target aspect.
+        crop_w, crop_h = r - l, b - t
+        target_w = int(crop_h * 0.75)
+        if target_w > crop_w:
+            cx = (l + r) // 2
+            half = target_w // 2
+            l, r = max(0, cx - half), min(W, cx + half)
+
+        crop = img.crop((l, t, r, b))
+        if max(crop.size) > max_size:
+            ratio = max_size / max(crop.size)
+            crop = crop.resize(
+                (int(crop.size[0] * ratio), int(crop.size[1] * ratio)), Image.LANCZOS
+            )
+
+        tmp = tempfile.NamedTemporaryFile(
+            suffix='.jpg', delete=False, dir=tempfile.gettempdir()
+        )
+        crop.save(tmp.name, 'JPEG', quality=90)
         tmp.close()
         return tmp.name
 
@@ -117,18 +173,14 @@ class GenerationService:
             else:
                 mapped_category = "upper_body"
 
-        import logging; logging.getLogger(__name__).warning(
-            f"[CAT] raw='{cat_raw}' mapped='{mapped_category}'"
-        )
-
-        # Add this debug log so we can see what's happening:
         import logging
         logging.getLogger(__name__).info(
-            f"Category mapping: input='{garment_category}' → output='{mapped_category}'"
+            "Category mapping: input=%r → mapped=%r", garment_category, mapped_category
         )
 
-        # Compress input images to speed up network transfers and model execution
-        person_path = self._compress_image(str(person_path))
+        # Crop the person to fill the frame (fixes landscape-photo "shrink"),
+        # and compress the garment for faster transfer.
+        person_path = self._prepare_person(str(person_path))
         garment_path = self._compress_image(str(garment_path))
 
         try:

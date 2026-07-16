@@ -122,39 +122,143 @@ def preprocess_image(image_path: str, output_path: str) -> str:
     return output_path
 
 
+def _clean_alpha(rgba):
+    """Keep only the largest connected person region; fill holes; soften edge."""
+    import numpy as np
+    from scipy import ndimage
+    from PIL import Image
+
+    arr = np.array(rgba)
+    alpha = arr[:, :, 3]
+    mask = alpha > 128
+    filled = ndimage.binary_fill_holes(mask)
+
+    labeled, num = ndimage.label(filled)
+    if num > 1:
+        sizes = ndimage.sum(filled, labeled, range(1, num + 1))
+        largest = int(np.argmax(sizes)) + 1
+        filled = labeled == largest
+        print(f"Removed {num - 1} disconnected regions")
+
+    # Slight dilation so we don't clip the silhouette edge
+    dil = ndimage.binary_dilation(filled, iterations=2)
+    arr[:, :, 3] = np.where(dil, np.maximum(alpha, 200), 0).astype(np.uint8)
+    return Image.fromarray(arr)
+
+
+from functools import lru_cache
+
+
+@lru_cache(maxsize=2)
+def _rembg_session(model: str = "u2net_human_seg"):
+    """Cache the rembg ONNX session — loading it costs ~1-2s per call otherwise."""
+    from rembg import new_session
+    try:
+        return new_session(model)
+    except Exception:
+        return new_session("u2net")
+
+
+def remove_background_rgba(image_path: str):
+    """Return a cleaned RGBA PIL image (person opaque, background transparent)."""
+    from rembg import remove
+    from PIL import Image
+    import io
+
+    print("Removing background...")
+    with open(image_path, "rb") as f:
+        out = remove(f.read(), session=_rembg_session("u2net_human_seg"))
+    rgba = Image.open(io.BytesIO(out)).convert("RGBA")
+    return _clean_alpha(rgba)
+
+
+def prepare_input(image_path: str, out_person_path: str,
+                  target: int = 512, fill: float = 0.88) -> list:
+    """
+    Produce the exact 512x512 image PIFuHD is fed AND textured from, and return
+    the person's bounding box [x, y, w, h] within that canvas.
+
+    Why this matters: PIFuHD is trained on humans that FILL the frame. The old
+    pipeline padded a small person into a big white square and set the rect to
+    the whole frame, so the network hallucinated a melted blob. Here we
+    background-remove, tight-crop to the person, and scale so the silhouette
+    fills ~`fill` of the frame. Because the mesh and this image then share one
+    coordinate system, colour projection later becomes pixel-accurate.
+    """
+    from PIL import Image
+    import numpy as np
+
+    try:
+        rgba = remove_background_rgba(image_path)
+    except Exception as e:
+        print(f"BG removal failed ({e}); using original image")
+        rgba = Image.open(image_path).convert("RGBA")
+
+    arr = np.array(rgba)
+    ys, xs = np.where(arr[:, :, 3] > 128)
+
+    if len(ys) == 0:
+        # No person detected — letterbox the original onto a square canvas
+        rgb = rgba.convert("RGB")
+        rgb.thumbnail((target, target), Image.LANCZOS)
+        canvas = Image.new("RGB", (target, target), (255, 255, 255))
+        off = ((target - rgb.width) // 2, (target - rgb.height) // 2)
+        canvas.paste(rgb, off)
+        canvas.save(out_person_path, "JPEG", quality=95)
+        return [off[0], off[1], rgb.width, rgb.height]
+
+    r0, r1, c0, c1 = int(ys.min()), int(ys.max()), int(xs.min()), int(xs.max())
+    crop = rgba.crop((c0, r0, c1 + 1, r1 + 1))
+
+    cw, ch = crop.size
+    scale = (target * fill) / max(cw, ch)
+    nw, nh = max(1, round(cw * scale)), max(1, round(ch * scale))
+    crop_r = crop.resize((nw, nh), Image.LANCZOS)
+
+    canvas = Image.new("RGB", (target, target), (255, 255, 255))
+    off = ((target - nw) // 2, (target - nh) // 2)
+    canvas.paste(crop_r, off, crop_r.split()[3])
+    canvas.save(out_person_path, "JPEG", quality=95)
+
+    print(f"Prepared input: person {cw}x{ch} -> {nw}x{nh} "
+          f"filling {fill:.0%} of {target}px frame")
+    return [off[0], off[1], nw, nh]
+
+
 def run_pifuhd(image_path: str, output_dir: str) -> str:
     input_dir = Path(output_dir) / "input"
     input_dir.mkdir(parents=True, exist_ok=True)
 
-    # Preprocess first
-    preprocessed_path = str(input_dir / "preprocessed.jpg")
-    preprocess_image(image_path, preprocessed_path)
-    print("[OK] Step 1/4: Image preprocessed", flush=True)
-
-    # Then remove background
+    # Background-remove + person-fill crop onto a SQUARE canvas.
     dest = input_dir / "person.jpg"
-    cleaned_path = remove_background(preprocessed_path, str(dest))
+    prepare_input(image_path, str(dest))
+    print("[OK] Step 1/4: Image prepared (person-filled crop)", flush=True)
     print("[OK] Step 2/4: Background removed", flush=True)
-    if cleaned_path != str(dest):
-        shutil.copy2(cleaned_path, str(dest))
 
-    # Write bounding rect file for --use_rect mode
+    # Rect MUST be the full square canvas. A non-square rect makes PIFuHD
+    # stretch the crop to a square and squash the person into a blob. The
+    # person already fills the frame vertically, so the full frame is correct,
+    # and it keeps colour projection an exact identity mapping.
     from PIL import Image
-    with Image.open(str(dest)) as img:
-        width, height = img.size
-
+    with Image.open(str(dest)) as im:
+        cw, ch = im.size
     rect_path = input_dir / "person_rect.txt"
     with open(rect_path, "w") as f:
-        f.write(f"0 0 {width} {height}\n")
+        f.write(f"0 0 {cw} {ch}\n")
 
     out_dir = Path(output_dir) / "result"
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Marching-cubes grid resolution dominates runtime (~O(res^3)). 512 is slow
+    # on a laptop RTX 3050; 256 is ~4-8x faster with a slightly coarser mesh.
+    # Override with PIFUHD_RESOLUTION=512 when you want maximum detail.
+    resolution = os.environ.get("PIFUHD_RESOLUTION", "256")
 
     cmd = [
         sys.executable, "-m", "apps.simple_test",
         "--input_path", str(input_dir),
         "--out_path", str(out_dir),
-        "--resolution", "512",
+        "--resolution", resolution,
         "--use_rect",
     ]
 
@@ -169,7 +273,7 @@ def run_pifuhd(image_path: str, output_dir: str) -> str:
             timeout=600, env=env,
         )
     except subprocess.TimeoutExpired as e:
-        raise RuntimeError(f"PIFuHD timed out at resolution 512: {e}")
+        raise RuntimeError(f"PIFuHD timed out at resolution {resolution}: {e}")
 
     if result.returncode != 0:
         raise RuntimeError(
@@ -186,7 +290,25 @@ def run_pifuhd(image_path: str, output_dir: str) -> str:
     return str(obj_files[0])
 
 
-def recolor_mesh_from_image(mesh, image_path: str, rect: list):
+def _dominant_hair_color(img):
+    """
+    Median colour of the top band of the person (their hair), from a
+    white-background image. Used to paint the back of the head so it doesn't
+    show a mirrored face. Falls back to a dark brown.
+    """
+    import numpy as np
+    nonwhite = np.any(img < 217, axis=2)  # ~0.85 * 255
+    ys, xs = np.where(nonwhite)
+    if len(ys) == 0:
+        return np.array([55.0, 45.0, 40.0])
+    top = int(ys.min())
+    band = ys <= top + 0.08 * (int(ys.max()) - top)
+    if int(band.sum()) < 20:
+        return np.array([55.0, 45.0, 40.0])
+    return np.median(img[ys[band], xs[band]].astype(np.float64), axis=0)
+
+
+def recolor_mesh_from_image(mesh, image_path: str, rect: list, back_image_path: str = None):
     """
     Re-derive vertex colors by projecting each vertex back onto the source
     image using PIFuHD's orthographic NDC coordinate system.
@@ -286,38 +408,106 @@ def recolor_mesh_from_image(mesh, image_path: str, rect: list):
         (px >= 0) & (px < img_w) &
         (py >= 0) & (py < img_h)
     )
-    valid = front_facing & in_bounds
-    n_valid = valid.sum()
-    n_front = front_facing.sum()
-    n_inbounds = in_bounds.sum()
+    n_front = int(front_facing.sum())
+    n_inbounds = int(in_bounds.sum())
     print(f"  Vertices: {n_verts} total, {n_front} front-facing, "
-          f"{n_inbounds} in-bounds, {n_valid} valid for recoloring", flush=True)
+          f"{n_inbounds} in-bounds", flush=True)
 
-    # ── Step 5: Sample colors from the image ──
-    # Use scipy.ndimage.map_coordinates for bilinear interpolation
-    # It expects (row, col) = (py, px)
-    # Start from existing vertex colors as fallback
-    if hasattr(mesh.visual, 'vertex_colors') and mesh.visual.vertex_colors is not None:
-        colors = mesh.visual.vertex_colors[:, :3].copy().astype(np.float64)
-        print(f"  Using existing vertex colors as fallback for back-facing vertices")
-    else:
-        colors = np.full((n_verts, 3), 128, dtype=np.float64)  # grey fallback
-        print(f"  No existing vertex colors — using grey fallback")
+    # ── Step 5: Wrap the front photo around the WHOLE body ──
+    # We colour every in-bounds vertex by its (x,y) projection — front and back
+    # alike. A back vertex projects to the same silhouette location as the front
+    # vertex above it, so the back of the blazer becomes navy, the back of the
+    # trousers beige, etc. This removes the grey back entirely. Back-facing
+    # vertices are then darkened slightly as a shading cue (we have no true back
+    # photo, so a plausible darker wrap beats a grey patch).
+    colors = np.full((n_verts, 3), 190.0, dtype=np.float64)  # neutral fallback
 
-    if n_valid > 0:
-        valid_px = px[valid]
-        valid_py = py[valid]
-
-        # Sample each channel with bilinear interpolation
+    if in_bounds.any():
         for c in range(3):
             channel = img[:, :, c].astype(np.float64)  # (H, W)
-            sampled = map_coordinates(
+            colors[in_bounds, c] = map_coordinates(
                 channel,
-                [valid_py, valid_px],  # (row, col)
-                order=1,               # bilinear
-                mode='nearest',
+                [py[in_bounds], px[in_bounds]],  # (row, col)
+                order=1, mode='nearest',
             )
-            colors[valid, c] = sampled
+
+        # ── The BACK: use a real back photo if the user gave one, else synthesize ──
+        back = (~front_facing) & in_bounds
+        if back.any():
+            real_back = None
+            if back_image_path and Path(back_image_path).exists():
+                try:
+                    import tempfile
+                    tb = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False).name
+                    prepare_input(back_image_path, tb)  # person fills 512, white bg
+                    bimg = np.array(Image.open(tb).convert("RGB"))
+                    # Mirror horizontally so the back photo lines up with the
+                    # front coordinate frame (left/right swap when seen from behind).
+                    real_back = bimg[:, ::-1, :]
+                    print("  Using REAL back photo for back-facing vertices", flush=True)
+                except Exception as exc:
+                    print(f"  Back-photo prep failed ({exc}); synthesizing back")
+
+            if real_back is not None:
+                rb_h, rb_w = real_back.shape[:2]
+                sx = px * (rb_w / img_w)
+                sy = py * (rb_h / img_h)
+                for c in range(3):
+                    colors[back, c] = map_coordinates(
+                        real_back[:, :, c].astype(np.float64),
+                        [sy[back], sx[back]], order=1, mode="nearest",
+                    )
+                colors[back] *= 0.92  # real data — only a touch of depth shading
+            else:
+                # Synthesize a plausible back: blurred colour bands + hair.
+                from scipy.ndimage import gaussian_filter
+                sigma = max(img_h, img_w) * 0.025
+                img_blur = np.stack(
+                    [gaussian_filter(img[:, :, c].astype(np.float64), sigma) for c in range(3)],
+                    axis=2,
+                )
+                for c in range(3):
+                    colors[back, c] = map_coordinates(
+                        img_blur[:, :, c], [py[back], px[back]], order=1, mode="nearest"
+                    )
+                colors[back] *= 0.72  # depth shading
+
+                # Back of the head → hair colour (never a wrapped face)
+                yv = verts_ndc[:, 1]
+                y_lo, y_hi = float(yv.min()), float(yv.max())
+                head_back = back & (yv > y_hi - 0.12 * (y_hi - y_lo))
+                if head_back.any():
+                    colors[head_back] = _dominant_hair_color(img) * 0.85
+
+        # Rare out-of-bounds verts inherit the nearest in-bounds colour
+        oob = ~in_bounds
+        if oob.any():
+            from scipy.spatial import cKDTree
+            tree = cKDTree(verts_ndc[in_bounds])
+            _, nn = tree.query(verts_ndc[oob], k=1)
+            colors[oob] = colors[in_bounds][nn] * 0.72
+
+        # ── Blend seams (front↔back, head↔torso) without softening the face ──
+        try:
+            from scipy import sparse
+            e = mesh.edges
+            A = sparse.coo_matrix(
+                (np.ones(len(e) * 2),
+                 (np.r_[e[:, 0], e[:, 1]], np.r_[e[:, 1], e[:, 0]])),
+                shape=(n_verts, n_verts),
+            ).tocsr()
+            deg = np.asarray(A.sum(1)).ravel()
+            invd = np.zeros(n_verts)
+            invd[deg > 0] = 1.0 / deg[deg > 0]
+            op = sparse.diags(invd).dot(A)
+            smoothed = colors.copy()
+            for _ in range(3):
+                smoothed = smoothed * 0.5 + op.dot(smoothed) * 0.5
+            # Smooth the back strongly, the front barely (preserves the face).
+            w = np.where(front_facing, 0.12, 0.75)[:, None]
+            colors = colors * (1 - w) + smoothed * w
+        except Exception as exc:
+            print(f"  Colour seam-blend skipped: {exc}")
 
     # ── Step 6: Apply colors back to the mesh ──
     colors_uint8 = np.clip(colors, 0, 255).astype(np.uint8)
@@ -325,57 +515,97 @@ def recolor_mesh_from_image(mesh, image_path: str, rect: list):
     rgba = np.column_stack([colors_uint8, np.full(n_verts, 255, dtype=np.uint8)])
     mesh.visual = trimesh.visual.ColorVisuals(mesh=mesh, vertex_colors=rgba)
 
-    print(f"  Recoloring complete: {n_valid}/{n_verts} vertices recolored",
-          flush=True)
+    print(f"  Recoloring complete: {n_inbounds}/{n_verts} vertices coloured "
+          f"({n_front} front-lit, {n_verts - n_front} back-shaded)", flush=True)
     return mesh
 
 
 def convert_to_glb(
-    obj_path: str, 
+    obj_path: str,
     output_dir: str,
     original_image_path: str = None,
+    rect: list = None,
+    back_image_path: str = None,
 ) -> str:
     """
-    Convert PIFuHD .obj to textured .glb.
-    If original_image_path provided, projects photo colors 
-    onto mesh as vertex colors.
+    Convert PIFuHD .obj to a cleaned, textured .glb.
+
+    Texture path (in order of preference):
+      1. Calibrated projection — samples the photo using PIFuHD's own
+         orthographic camera, so colour lines up with geometry exactly.
+      2. Bounding-box projection — cruder stretch, used only if (1) fails.
+      3. Warm neutral colour — last resort. We NEVER silently fall back to
+         trimesh's default grey (that was the old "grey blob" bug).
     """
-    glb_path = str(Path(output_dir) / "avatar.glb")
-    
-    if original_image_path and Path(original_image_path).exists():
-        print("Using photo texture projection...")
-        try:
-            project_texture_onto_mesh(
-                obj_path=obj_path,
-                image_path=original_image_path,
-                output_glb_path=glb_path,
-            )
-            return glb_path
-        except Exception as e:
-            print(f"Texture projection failed: {e}")
-            print("Falling back to vertex color extraction...")
-    
-    # Fallback: extract existing vertex colors from obj
     import trimesh
     import numpy as np
-    
+
+    glb_path = str(Path(output_dir) / "avatar.glb")
+
     mesh = trimesh.load(obj_path, process=False)
     if isinstance(mesh, trimesh.Scene):
-        geometries = list(mesh.geometry.values())
-        mesh = max(geometries, key=lambda g: len(g.faces))
-    
-    # Remove fragments
+        mesh = max(mesh.geometry.values(), key=lambda g: len(g.faces))
+
+    # Keep only the main body component (drop floating fragments)
     try:
         components = mesh.split(only_watertight=False)
         if len(components) > 1:
             mesh = max(components, key=lambda c: len(c.faces))
-    except Exception:
-        pass
-    
-    # Rotate to face forward
-    rotation = trimesh.transformations.rotation_matrix(np.pi, [0, 1, 0])
-    mesh.apply_transform(rotation)
-    
+            print(f"Kept main component: {len(mesh.faces)} faces")
+    except Exception as e:
+        print(f"Component split skipped: {e}")
+
+    # Taubin smoothing reduces the lumpy surface WITHOUT shrinking the mesh
+    # (plain Laplacian shrinks it and rounds off hands/feet).
+    try:
+        import trimesh.smoothing as smoothing
+        smoothing.filter_taubin(mesh, iterations=10)
+        print("Mesh smoothed (Taubin)")
+    except Exception as e:
+        print(f"Smoothing skipped: {e}")
+
+    # Rotate 180° about Y so the mesh faces the camera
+    mesh.apply_transform(trimesh.transformations.rotation_matrix(np.pi, [0, 1, 0]))
+
+    colored = False
+    if original_image_path and Path(original_image_path).exists():
+        # 1. Calibrated projection (preferred)
+        try:
+            from PIL import Image
+            if rect is None:
+                with Image.open(original_image_path) as im:
+                    W, H = im.size
+                rect = [0, 0, W, H]
+            mesh = recolor_mesh_from_image(
+                mesh, original_image_path, rect, back_image_path=back_image_path
+            )
+            colored = True
+            print("Texture: calibrated projection OK")
+        except Exception as e:
+            print(f"Calibrated projection failed: {e}")
+            import traceback
+            traceback.print_exc()
+
+        # 2. Bounding-box projection (fallback — writes its own glb)
+        if not colored:
+            try:
+                project_texture_onto_mesh(
+                    obj_path=obj_path,
+                    image_path=original_image_path,
+                    output_glb_path=glb_path,
+                )
+                print("Texture: bbox projection fallback OK")
+                return glb_path
+            except Exception as e:
+                print(f"Bbox projection failed: {e}")
+
+    # 3. Warm neutral colour — last resort, never grey
+    if not colored:
+        n = len(mesh.vertices)
+        rgba = np.tile(np.array([200, 180, 165, 255], np.uint8), (n, 1))
+        mesh.visual = trimesh.visual.ColorVisuals(mesh=mesh, vertex_colors=rgba)
+        print("Texture: applied neutral fallback colour")
+
     mesh.export(glb_path)
     return glb_path
 
@@ -422,20 +652,41 @@ def generate():
             open(img_path, "wb").write(image_bytes)
             original_img_path = img_path  # Save before preprocessing
 
+            # Optional back photo → textures the back with real data
+            back_img_path = None
+            if data.get("back_image_base64"):
+                try:
+                    back_img_path = os.path.join(tmp, "back.jpg")
+                    with open(back_img_path, "wb") as f:
+                        f.write(base64.b64decode(data["back_image_base64"]))
+                    print("Received optional back photo", flush=True)
+                except Exception as e:
+                    print(f"Could not decode back photo: {e}", flush=True)
+                    back_img_path = None
+
             print(f"Running PIFuHD on {len(image_bytes)} byte image...", flush=True)
             obj_path = run_pifuhd(img_path, tmp)
             print("[OK] Step 3/4: 3D mesh reconstructed", flush=True)
             print(f"PIFuHD done: {obj_path}", flush=True)
 
-            # Use the preprocessed (bg removed) image for projection
-            # It has clean white background which helps color sampling
+            # Texture from the SAME 512 image PIFuHD was fed (person.jpg) so the
+            # calibrated projection lines up exactly. Read the person rect that
+            # prepare_input wrote for that alignment.
             preprocessed_for_texture = os.path.join(tmp, "input", "person.jpg")
             texture_source = (
-                preprocessed_for_texture 
-                if Path(preprocessed_for_texture).exists() 
+                preprocessed_for_texture
+                if Path(preprocessed_for_texture).exists()
                 else original_img_path
             )
-            glb_path = convert_to_glb(obj_path, tmp, texture_source)
+            rect = None
+            rect_file = Path(tmp) / "input" / "person_rect.txt"
+            if rect_file.exists():
+                parts = rect_file.read_text().split()
+                if len(parts) >= 4:
+                    rect = [int(float(p)) for p in parts[:4]]
+            glb_path = convert_to_glb(
+                obj_path, tmp, texture_source, rect, back_image_path=back_img_path
+            )
             print("[OK] Step 4/4: Texture applied and GLB exported", flush=True)
             glb_size_mb = Path(glb_path).stat().st_size / (1024*1024)
             print(f"Final GLB size: {glb_size_mb:.2f} MB", flush=True)

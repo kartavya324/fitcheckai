@@ -1,6 +1,9 @@
 import json
 from pathlib import Path
-from sqlalchemy import create_engine, Column, String, Integer, DateTime, Text, JSON, Enum as SQLEnum
+from sqlalchemy import (
+    create_engine, Column, String, Integer, DateTime, Text, JSON,
+    UniqueConstraint, Enum as SQLEnum,
+)
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 from app.config import get_settings
@@ -33,6 +36,65 @@ class JobModel(Base):
     updated_at = Column(DateTime(timezone=True), nullable=True)
     started_at = Column(DateTime(timezone=True), nullable=True)
     completed_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class WardrobeItemModel(Base):
+    __tablename__ = "wardrobe_items"
+
+    id = Column(String, primary_key=True, index=True)
+    name = Column(String, nullable=True)
+    category = Column(String, nullable=False)  # tops|bottoms|footwear|outerwear|accessory
+    color = Column(String, nullable=True)
+    brand = Column(String, nullable=True)
+    image_path = Column(String, nullable=False)  # relative to storage root
+    created_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class OutfitModel(Base):
+    __tablename__ = "outfits"
+
+    id = Column(String, primary_key=True, index=True)
+    name = Column(String, nullable=True)
+    item_ids = Column(JSON, default=list)  # ordered wardrobe item ids
+    created_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class PostModel(Base):
+    """A shared 'fit check' — an outfit photo the community can vote on."""
+    __tablename__ = "feed_posts"
+
+    id = Column(String, primary_key=True, index=True)
+    device_id = Column(String, nullable=False, index=True)  # poster (no accounts yet)
+    display_name = Column(String, nullable=True)
+    image_path = Column(String, nullable=False)
+    caption = Column(Text, nullable=True)
+    fire_count = Column(Integer, default=0, nullable=False)   # 🔥 yes
+    cold_count = Column(Integer, default=0, nullable=False)   # 🥶 no
+    comment_count = Column(Integer, default=0, nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class VoteModel(Base):
+    __tablename__ = "feed_votes"
+    __table_args__ = (UniqueConstraint("post_id", "device_id", name="uq_vote_post_device"),)
+
+    id = Column(String, primary_key=True)
+    post_id = Column(String, nullable=False, index=True)
+    device_id = Column(String, nullable=False, index=True)
+    value = Column(String, nullable=False)  # "fire" | "cold"
+    created_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class CommentModel(Base):
+    __tablename__ = "feed_comments"
+
+    id = Column(String, primary_key=True)
+    post_id = Column(String, nullable=False, index=True)
+    device_id = Column(String, nullable=False)
+    display_name = Column(String, nullable=True)
+    text = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=True)
+
 
 def get_engine():
     settings = get_settings()

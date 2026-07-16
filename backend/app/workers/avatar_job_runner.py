@@ -25,7 +25,10 @@ class AvatarJobRunner:
         self._gen = avatar_generation_service
         self._repo = job_repository
 
-    async def run(self, *, job_id: str, session_id: str, person_image_path: str) -> None:
+    async def run(
+        self, *, job_id: str, session_id: str, person_image_path: str,
+        back_image_path: str | None = None,
+    ) -> None:
         _avatar_progress[job_id] = {"pct": 0, "stage": "Starting..."}
 
         def on_progress(pct: int, stage: str | None = None) -> None:
@@ -53,6 +56,7 @@ class AvatarJobRunner:
                 self._gen.generate,
                 session_id=session_id,
                 person_image_path=person_image_path,
+                back_image_path=back_image_path,
                 on_progress=on_progress,
             )
 
