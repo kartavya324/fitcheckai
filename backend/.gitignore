@@ -18,3 +18,8 @@ dist/
 build/
 storage/fitcheck.db
 storage/avatars/
+
+# Local test / debug artifacts (not source)
+*.glb
+last_error.log
+test_person.jpg

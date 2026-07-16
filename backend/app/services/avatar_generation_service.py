@@ -18,9 +18,14 @@ class AvatarGenerationService:
         *,
         session_id: str,
         person_image_path: str,
+        back_image_path: str | None = None,
         on_progress: Callable[[int, str | None], None] | None = None,
     ) -> str:
-        """Generate avatar. Returns relative path to .glb file."""
+        """Generate avatar. Returns relative path to .glb file.
+
+        `back_image_path` is optional — when given, the back of the avatar is
+        textured from that real photo instead of being synthesized.
+        """
         if self._settings.avatar_mode == "runpod":
             return self._generate_runpod(
                 session_id=session_id,
@@ -31,6 +36,7 @@ class AvatarGenerationService:
             return self._generate_local_pifuhd(
                 session_id=session_id,
                 person_image_path=person_image_path,
+                back_image_path=back_image_path,
                 on_progress=on_progress,
             )
         return self._generate_stub(
@@ -135,7 +141,7 @@ class AvatarGenerationService:
         try:
             glb_b64 = result["output"]["glb_base64"]
             glb_bytes = base64.b64decode(glb_b64)
-        except (KeyError, Exception) as e:
+        except Exception as e:
             raise AppError(
                 f"Invalid RunPod response: {e}",
                 code="RUNPOD_ERROR",
@@ -152,16 +158,22 @@ class AvatarGenerationService:
 
         return result_path
 
-    def _generate_local_pifuhd(self, *, session_id, person_image_path, on_progress=None):
+    def _generate_local_pifuhd(
+        self, *, session_id, person_image_path, back_image_path=None, on_progress=None
+    ):
         """Call local PIFuHD Flask server (pifuhd_server.py) running on this machine."""
         local_url = getattr(self._settings, "local_inference_url", "http://localhost:8090")
 
         if on_progress:
             on_progress(10, "Uploading photo to local PIFuHD server...")
 
-        image_b64 = base64.b64encode(
-            open(person_image_path, "rb").read()
-        ).decode()
+        with open(person_image_path, "rb") as f:
+            image_b64 = base64.b64encode(f.read()).decode()
+
+        payload = {"image_base64": image_b64}
+        if back_image_path:
+            with open(back_image_path, "rb") as f:
+                payload["back_image_base64"] = base64.b64encode(f.read()).decode()
 
         if on_progress:
             on_progress(25, "Reconstructing 3D body mesh (3-6 min on RTX 3050)...")
@@ -169,7 +181,7 @@ class AvatarGenerationService:
         try:
             response = httpx.post(
                 f"{local_url}/generate",
-                json={"image_base64": image_b64},
+                json=payload,
                 timeout=400.0,
             )
             response.raise_for_status()
@@ -199,7 +211,7 @@ class AvatarGenerationService:
 
         try:
             glb_bytes = base64.b64decode(result["glb_base64"])
-        except (KeyError, Exception) as e:
+        except Exception as e:
             raise AppError(
                 f"Invalid PIFuHD server response: {e}",
                 code="PIFUHD_ERROR",

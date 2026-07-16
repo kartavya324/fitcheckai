@@ -14,10 +14,14 @@ router = APIRouter(prefix="/avatar", tags=["avatar"])
 
 
 @router.post("/create", status_code=202)
-async def create_avatar(person_image: UploadFile = File(...)):
+async def create_avatar(
+    person_image: UploadFile = File(...),
+    back_image: UploadFile = File(None),
+):
     """
-    Accept a person photo and start avatar generation.
-    Returns a job_id to poll for status.
+    Accept a person photo (and an OPTIONAL back photo) and start avatar
+    generation. Returns a job_id to poll for status. When a back photo is
+    provided, the back of the avatar is textured from it instead of synthesized.
     """
     settings = get_settings()
 
@@ -39,6 +43,18 @@ async def create_avatar(person_image: UploadFile = File(...)):
     avatar_upload_dir.mkdir(parents=True, exist_ok=True)
     image_path = avatar_upload_dir / f"{session_id}.jpg"
     image_path.write_bytes(content)
+
+    # Optional back photo
+    back_image_path = None
+    if back_image is not None and back_image.filename:
+        if back_image.content_type not in allowed:
+            raise HTTPException(400, "Back image must be JPEG, PNG, or WebP")
+        back_content = await back_image.read()
+        if len(back_content) > settings.max_upload_bytes:
+            raise HTTPException(400, "Back image too large")
+        back_path = avatar_upload_dir / f"{session_id}_back.jpg"
+        back_path.write_bytes(back_content)
+        back_image_path = str(back_path)
 
     # Create job record
     storage = StorageService(settings)
@@ -68,6 +84,7 @@ async def create_avatar(person_image: UploadFile = File(...)):
             job_id=job.job_id,
             session_id=session_id,
             person_image_path=str(image_path),
+            back_image_path=back_image_path,
         )
     )
 
@@ -92,9 +109,25 @@ def get_avatar_status(job_id: str):
 
     progress = get_avatar_progress(job_id)
     avatar_url = None
+    analysis = None
 
     if job.status == JobStatus.COMPLETED and job.result_path:
         avatar_url = f"{settings.public_base_url}/files/{job.result_path}"
+
+    error = None
+    if job.status == JobStatus.FAILED and job.error:
+        error = {"code": job.error.code, "message": job.error.message}
+
+    # Include photo analysis data when available
+    if job.metadata and "analysis" in job.metadata:
+        raw_analysis = job.metadata["analysis"]
+        face_url = None
+        if raw_analysis.get("face_thumbnail_path"):
+            face_url = f"{settings.public_base_url}/files/{raw_analysis['face_thumbnail_path']}"
+        analysis = {
+            "dominant_colors": raw_analysis.get("dominant_colors", []),
+            "face_thumbnail_url": face_url,
+        }
 
     return {
         "job_id": job_id,
@@ -102,4 +135,6 @@ def get_avatar_status(job_id: str):
         "progress": progress.get("pct", job.progress or 0),
         "stage": progress.get("stage", job.stage or ""),
         "avatar_url": avatar_url,
+        "analysis": analysis,
+        "error": error,
     }

@@ -1,3 +1,7 @@
+import ipaddress
+import socket
+from urllib.parse import urlparse
+
 import httpx
 from bs4 import BeautifulSoup
 from fastapi import APIRouter, HTTPException, status
@@ -16,6 +20,48 @@ class ProductFetchRequest(BaseModel):
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 MAX_IMAGE_SIZE = 10 * 1024 * 1024
+MAX_REDIRECTS = 5
+
+
+def _assert_public_url(url: str) -> None:
+    """
+    SSRF guard: only allow http(s) URLs whose host resolves to a *public*
+    address. Blocks localhost, private ranges, link-local (cloud metadata at
+    169.254.169.254), and reserved space — so a crafted product URL can't make
+    the server reach internal services.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise AppError("Only http and https URLs are allowed",
+                       code="INVALID_URL", status_code=400)
+    host = parsed.hostname
+    if not host:
+        raise AppError("URL has no host", code="INVALID_URL", status_code=400)
+
+    try:
+        infos = socket.getaddrinfo(host, parsed.port or 80, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as e:
+        raise AppError(f"Could not resolve host: {host}",
+                       code="INVALID_URL", status_code=400) from e
+
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+            raise AppError("URL resolves to a non-public address and is blocked",
+                           code="BLOCKED_URL", status_code=400)
+
+
+async def _safe_get(client: httpx.AsyncClient, url: str, **kwargs) -> httpx.Response:
+    """GET that validates every redirect hop against the SSRF guard."""
+    for _ in range(MAX_REDIRECTS):
+        _assert_public_url(url)
+        resp = await client.get(url, follow_redirects=False, **kwargs)
+        if resp.is_redirect and resp.headers.get("location"):
+            url = str(resp.url.join(resp.headers["location"]))
+            continue
+        return resp
+    raise AppError("Too many redirects", code="TOO_MANY_REDIRECTS", status_code=400)
 
 def get_largest_image(soup: BeautifulSoup) -> str | None:
     # First try og:image
@@ -66,10 +112,10 @@ async def fetch_product_image(
     storage_service: StorageServiceDep,
 ) -> UploadCreatedResponse:
     url_str = str(body.url)
-    
-    async with httpx.AsyncClient(headers={"User-Agent": USER_AGENT}, follow_redirects=True) as client:
+
+    async with httpx.AsyncClient(headers={"User-Agent": USER_AGENT}) as client:
         try:
-            resp = await client.get(url_str, timeout=10.0)
+            resp = await _safe_get(client, url_str, timeout=10.0)
             resp.raise_for_status()
         except httpx.RequestError as e:
             raise AppError(f"Failed to fetch URL: {str(e)}", code="FETCH_ERROR", status_code=400)
@@ -89,7 +135,7 @@ async def fetch_product_image(
             img_url = f"{parsed.scheme}://{parsed.host}{img_url}"
             
         try:
-            img_resp = await client.get(img_url, timeout=15.0)
+            img_resp = await _safe_get(client, img_url, timeout=15.0)
             img_resp.raise_for_status()
         except httpx.RequestError as e:
             raise AppError(f"Failed to download image: {str(e)}", code="FETCH_ERROR", status_code=400)

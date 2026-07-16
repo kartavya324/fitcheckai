@@ -18,7 +18,12 @@ export function Header() {
   const navLinks = [
     { to: "/", label: "Home" },
     { to: "/try-on", label: "Try On" },
+    { to: "/feed", label: "Feed" },
     { to: "/avatar", label: "Avatar" },
+    { to: "/stylist", label: "Stylist" },
+    { to: "/size", label: "My Size" },
+    { to: "/wardrobe", label: "Wardrobe" },
+    { to: "/colors", label: "Colors" },
     { to: "/history", label: "History" },
   ];
 

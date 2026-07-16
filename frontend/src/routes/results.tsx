@@ -1,11 +1,23 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState } from "react";
 import { motion } from "framer-motion";
-import { Download, RotateCcw, Share2, ChevronLeft, Check, Loader2, AlertCircle } from "lucide-react";
+import {
+  Download,
+  RotateCcw,
+  Share2,
+  ChevronLeft,
+  Check,
+  Loader2,
+  AlertCircle,
+  Footprints,
+  Upload,
+  Sparkles,
+} from "lucide-react";
 import { z } from "zod";
 import { useQuery } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { getJob, jobQueryKeys, loadTryOnSession } from "@/lib/api";
+import { getJob, jobQueryKeys, loadTryOnSession, useTryFootwear, getErrorMessage } from "@/lib/api";
 import { AvatarViewer } from "@/components/AvatarViewer";
 
 const resultsSearchSchema = z.object({
@@ -211,6 +223,12 @@ function ResultsPage() {
           </motion.div>
         </div>
 
+        {job?.status === "completed" &&
+          job?.result_url &&
+          !job.result_url.match(/\.(glb|gltf)($|\?)/i) && (
+            <FootwearSection personImageUrl={job.result_url} />
+          )}
+
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -235,6 +253,112 @@ function ResultsPage() {
         </motion.div>
       </motion.div>
     </div>
+  );
+}
+
+function FootwearSection({ personImageUrl }: { personImageUrl: string }) {
+  const [shoeFile, setShoeFile] = useState<File | null>(null);
+  const [shoePreview, setShoePreview] = useState<string | null>(null);
+  const [resultUrl, setResultUrl] = useState<string | null>(null);
+  const tryFoot = useTryFootwear();
+
+  const pickShoe = (file: File) => {
+    setShoeFile(file);
+    setShoePreview((prev) => {
+      if (prev?.startsWith("blob:")) URL.revokeObjectURL(prev);
+      return URL.createObjectURL(file);
+    });
+    setResultUrl(null);
+  };
+
+  const apply = () => {
+    if (!shoeFile) return;
+    tryFoot.mutate(
+      { personImageUrl, shoeFile },
+      {
+        onSuccess: (r) => setResultUrl(r.result_url),
+        onError: (e) => toast.error(getErrorMessage(e)),
+      },
+    );
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.5, delay: 0.3 }}
+      className="mt-10 rounded-2xl border border-border bg-card p-5 sm:p-6"
+    >
+      <div className="mb-4 flex items-center gap-2">
+        <Footprints className="h-5 w-5 text-copper" />
+        <h2 className="font-heading text-lg font-semibold text-foreground">
+          Add footwear
+        </h2>
+        <span className="rounded-full bg-secondary px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+          Beta
+        </span>
+      </div>
+      <p className="mb-4 text-sm text-muted-foreground">
+        Upload a shoe or slipper (a transparent PNG works best) to place it on the feet.
+      </p>
+
+      <div className="grid gap-4 sm:grid-cols-2">
+        <label className="flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed border-border bg-surface p-6 text-center transition-colors hover:border-foreground/30">
+          {shoePreview ? (
+            <img src={shoePreview} alt="Shoe" className="max-h-28 object-contain" />
+          ) : (
+            <>
+              <Upload className="h-6 w-6 text-muted-foreground" />
+              <p className="mt-2 text-sm font-medium text-foreground">Upload shoe image</p>
+              <p className="mt-1 text-xs text-muted-foreground">PNG or JPG</p>
+            </>
+          )}
+          <input
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) pickShoe(f);
+            }}
+          />
+        </label>
+
+        <div className="relative flex items-center justify-center overflow-hidden rounded-xl border border-border bg-muted/30">
+          {resultUrl ? (
+            <img src={resultUrl} alt="With footwear" className="h-full w-full object-cover" />
+          ) : tryFoot.isPending ? (
+            <div className="flex flex-col items-center gap-2 p-6 text-center">
+              <Loader2 className="h-6 w-6 animate-spin text-copper" />
+              <p className="text-sm text-muted-foreground">Placing footwear…</p>
+            </div>
+          ) : (
+            <p className="p-6 text-center text-sm text-muted-foreground">
+              Your look with the new footwear will appear here.
+            </p>
+          )}
+        </div>
+      </div>
+
+      <div className="mt-4 flex flex-wrap items-center gap-3">
+        <Button onClick={apply} disabled={!shoeFile || tryFoot.isPending} className="gap-2">
+          {tryFoot.isPending ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <Sparkles className="h-4 w-4" />
+          )}
+          {tryFoot.isPending ? "Applying…" : "Apply footwear"}
+        </Button>
+        {resultUrl && (
+          <a href={resultUrl} download="fitcheck-footwear.jpg">
+            <Button variant="outline" className="gap-2">
+              <Download className="h-4 w-4" />
+              Download
+            </Button>
+          </a>
+        )}
+      </div>
+    </motion.div>
   );
 }
 

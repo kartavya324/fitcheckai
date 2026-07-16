@@ -53,6 +53,11 @@ class Settings(BaseSettings):
         default="http://localhost:8090",
         alias="LOCAL_INFERENCE_URL",
     )
+    # AI stylist (chat + product search)
+    anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
+    serpapi_key: str | None = Field(default=None, alias="SERPAPI_KEY")
+    shopping_locale: str = Field(default="in", alias="SHOPPING_LOCALE")
+    shopping_currency: str = Field(default="₹", alias="SHOPPING_CURRENCY")
 
     @field_validator("cors_origins", mode="before")
     @classmethod
