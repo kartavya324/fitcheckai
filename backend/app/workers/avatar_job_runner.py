@@ -2,6 +2,7 @@ import asyncio
 import logging
 
 from app.services.avatar_generation_service import AvatarGenerationService
+from app.services.generation_service import GenerationService
 from app.repositories.job_repository import JobRepository
 from app.models.job import Job, JobError, JobStatus
 
@@ -100,6 +101,95 @@ class AvatarJobRunner:
                 from datetime import datetime, UTC
                 job.status = JobStatus.FAILED
                 job.error = JobError(code="AVATAR_ERROR", message=str(e))
+                job.updated_at = datetime.now(UTC)
+                self._repo.update(job)
+        finally:
+            _avatar_progress.pop(job_id, None)
+
+    async def run_tryon(
+        self,
+        *,
+        job_id: str,
+        session_id: str,
+        person_image_path: str,
+        garment_image_path: str,
+        garment_category: str,
+        avatar_glb_path: str,
+        tryon_service: GenerationService,
+    ) -> None:
+        """Avatar try-on pipeline:
+        1. 2D virtual try-on (IDM-VTON) — dress the person photo in the garment.
+        2. Re-project the dressed photo onto the existing 3D avatar mesh.
+        """
+        _avatar_progress[job_id] = {"pct": 0, "stage": "Starting..."}
+
+        def on_progress(pct: int, stage: str | None = None) -> None:
+            _avatar_progress[job_id] = {"pct": pct, "stage": stage or ""}
+            job = self._repo.get(job_id)
+            if job:
+                from datetime import datetime, UTC
+                job.progress = pct
+                job.stage = stage
+                job.updated_at = datetime.now(UTC)
+                self._repo.update(job)
+
+        try:
+            job = self._repo.get(job_id)
+            if job:
+                from datetime import datetime, UTC
+                job.status = JobStatus.PROCESSING
+                job.progress = 0
+                job.started_at = datetime.now(UTC)
+                job.updated_at = datetime.now(UTC)
+                self._repo.update(job)
+
+            # ── Stage 1: 2D try-on (0–65%) ──
+            def tryon_progress(pct: int, stage: str | None = None) -> None:
+                on_progress(int(pct * 0.65), stage)
+
+            tryon_image_rel = await asyncio.to_thread(
+                tryon_service.generate,
+                job_id=job_id,
+                person_path=person_image_path,
+                garment_path=garment_image_path,
+                garment_category=garment_category,
+                on_progress=tryon_progress,
+            )
+
+            from app.config import get_settings
+            settings = get_settings()
+            tryon_image_abs = str(settings.storage_root / tryon_image_rel)
+
+            # ── Stage 2: project the dressed photo onto the 3D mesh (65–100%) ──
+            on_progress(70, "Projecting outfit onto your 3D avatar...")
+            tryon_glb_rel = await asyncio.to_thread(
+                self._gen.recolor_avatar,
+                glb_path=avatar_glb_path,
+                image_path=tryon_image_abs,
+                output_name=f"{session_id}_tryon_{job_id[:8]}",
+                on_progress=on_progress,
+            )
+
+            job = self._repo.get(job_id)
+            if job:
+                from datetime import datetime, UTC
+                job.status = JobStatus.COMPLETED
+                job.progress = 100
+                job.result_path = tryon_glb_rel
+                job.stage = None
+                job.metadata = job.metadata or {}
+                job.metadata["tryon_image_path"] = tryon_image_rel
+                job.completed_at = datetime.now(UTC)
+                job.updated_at = datetime.now(UTC)
+                self._repo.update(job)
+
+        except Exception as e:
+            logger.error(f"Avatar try-on job {job_id} failed: {e}", exc_info=True)
+            job = self._repo.get(job_id)
+            if job:
+                from datetime import datetime, UTC
+                job.status = JobStatus.FAILED
+                job.error = JobError(code="AVATAR_TRYON_ERROR", message=str(e))
                 job.updated_at = datetime.now(UTC)
                 self._repo.update(job)
         finally:

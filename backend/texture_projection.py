@@ -182,8 +182,13 @@ def project_texture_onto_mesh(
     except Exception as e:
         print(f"Color smoothing skipped: {e}")
 
-    # Convert to RGBA uint8
-    colors_uint8 = np.clip(vertex_colors * 255, 0, 255).astype(np.uint8)
+    # Convert to RGBA uint8. Samples are sRGB photo pixels; glTF COLOR_0 is
+    # linear, so convert (matches _srgb_to_linear_u8 in pifuhd_server.py).
+    srgb = np.clip(vertex_colors, 0.0, 1.0)
+    linear = np.where(
+        srgb <= 0.04045, srgb / 12.92, ((srgb + 0.055) / 1.055) ** 2.4
+    )
+    colors_uint8 = np.clip(linear * 255 + 0.5, 0, 255).astype(np.uint8)
     alpha_channel = np.full((len(vertices), 1), 255, dtype=np.uint8)
     vertex_colors_rgba = np.hstack([colors_uint8, alpha_channel])
 

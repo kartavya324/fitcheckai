@@ -281,6 +281,8 @@ export interface AvatarStatusResponse {
   stage: string;
   avatar_url: string | null;
   analysis: AvatarAnalysis | null;
+  /** 2D dressed photo produced during avatar try-on jobs */
+  tryon_image_url?: string | null;
   error?: { code: string; message: string } | null;
 }
 
@@ -301,6 +303,24 @@ export async function createAvatar(
 
 export async function getAvatarStatus(jobId: string): Promise<AvatarStatusResponse> {
   const res = await fetch(`${API_BASE_URL}/api/v1/avatar/status/${jobId}`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+/** Try a garment photo on an existing 3D avatar (poll with getAvatarStatus). */
+export async function createAvatarTryon(
+  sessionId: string,
+  garmentFile: File,
+  garmentCategory: string = "upper_body",
+): Promise<AvatarCreateResponse> {
+  const formData = new FormData();
+  formData.append("session_id", sessionId);
+  formData.append("garment_image", garmentFile);
+  formData.append("garment_category", garmentCategory);
+  const res = await fetch(`${API_BASE_URL}/api/v1/avatar/tryon`, {
+    method: "POST",
+    body: formData,
+  });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }

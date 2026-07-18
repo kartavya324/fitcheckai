@@ -2,28 +2,33 @@ import { useRef, useEffect, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-import { Loader2 } from "lucide-react";
+import { Loader2, Pause, RotateCw } from "lucide-react";
 
 interface AvatarViewer3DProps {
   glbUrl: string;
   height?: number;
+  /** Start with auto-rotation on. Users can always toggle it in the viewer. */
   autoRotate?: boolean;
 }
 
 export function AvatarViewer3D({
   glbUrl,
   height = 500,
-  autoRotate = true,
+  autoRotate = false,
 }: AvatarViewer3DProps) {
   const mountRef = useRef<HTMLDivElement>(null);
+  const controlsRef = useRef<OrbitControls | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadPct, setLoadPct] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [rotating, setRotating] = useState(autoRotate);
 
   useEffect(() => {
     const container = mountRef.current
     if (!container) return
 
     setLoading(true)
+    setLoadPct(null)
     setError(null)
 
     const width = container.clientWidth
@@ -37,38 +42,68 @@ export function AvatarViewer3D({
     renderer.setPixelRatio(window.devicePixelRatio)
     renderer.setSize(width, height)
     renderer.shadowMap.enabled = false
-    // CRITICAL: use NoColorSpace so vertex colors are not 
-    // gamma corrected (which causes the pale/washed look)
-    renderer.outputColorSpace = THREE.LinearSRGBColorSpace
+    // Spec-correct pipeline: GLB vertex colors are exported LINEAR by the
+    // backend (sRGB→linear at export), so the default sRGB output encodes
+    // them back to photo-faithful values on screen.
+    renderer.outputColorSpace = THREE.SRGBColorSpace
     renderer.toneMapping = THREE.NoToneMapping
     container.appendChild(renderer.domElement)
 
-    // Balanced lighting — not too bright (causes washout)
-    // not too dark
-    const ambient = new THREE.AmbientLight(0xffffff, 1.8)
-    scene.add(ambient)
+    // Studio-style lighting: soft hemisphere base + key/fill/rim.
+    // Total front irradiance ≈ π so a Lambert surface reflects its albedo
+    // (i.e. the avatar on screen matches the photo's brightness).
+    const hemi = new THREE.HemisphereLight(0xffffff, 0xb1a99e, 2.0)
+    scene.add(hemi)
 
-    const frontKey = new THREE.DirectionalLight(0xffffff, 1.2)
-    frontKey.position.set(0, 2, 4)
+    const frontKey = new THREE.DirectionalLight(0xffffff, 1.6)
+    frontKey.position.set(1.5, 3, 4)
     scene.add(frontKey)
 
-    const leftFill = new THREE.DirectionalLight(0xffffff, 0.6)
+    const leftFill = new THREE.DirectionalLight(0xffffff, 0.7)
     leftFill.position.set(-3, 1, 2)
     scene.add(leftFill)
 
-    const rightFill = new THREE.DirectionalLight(0xffffff, 0.6)
-    rightFill.position.set(3, 1, 2)
-    scene.add(rightFill)
+    const rimLight = new THREE.DirectionalLight(0xffffff, 0.5)
+    rimLight.position.set(0, 2, -4)
+    scene.add(rimLight)
 
-    const backLight = new THREE.DirectionalLight(0xffffff, 0.3)
-    backLight.position.set(0, 1, -4)
-    scene.add(backLight)
+    // Soft contact shadow: radial-gradient disc under the avatar grounds it
+    // without the cost of real shadow mapping.
+    const shadowCanvas = document.createElement('canvas')
+    shadowCanvas.width = shadowCanvas.height = 256
+    const sctx = shadowCanvas.getContext('2d')!
+    const grad = sctx.createRadialGradient(128, 128, 8, 128, 128, 128)
+    grad.addColorStop(0, 'rgba(0,0,0,0.32)')
+    grad.addColorStop(0.55, 'rgba(0,0,0,0.12)')
+    grad.addColorStop(1, 'rgba(0,0,0,0)')
+    sctx.fillStyle = grad
+    sctx.fillRect(0, 0, 256, 256)
+    const shadowTex = new THREE.CanvasTexture(shadowCanvas)
+    const shadowMesh = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.6, 1.6),
+      new THREE.MeshBasicMaterial({
+        map: shadowTex,
+        transparent: true,
+        depthWrite: false,
+      }),
+    )
+    shadowMesh.rotation.x = -Math.PI / 2
+    shadowMesh.position.y = 0.005
+    scene.add(shadowMesh)
 
     const controls = new OrbitControls(camera, renderer.domElement)
     controls.enableDamping = true
     controls.dampingFactor = 0.05
     controls.autoRotate = autoRotate
     controls.autoRotateSpeed = 1.2
+    // Stop spinning as soon as the user grabs the model
+    controls.addEventListener('start', () => {
+      if (controls.autoRotate) {
+        controls.autoRotate = false
+        setRotating(false)
+      }
+    })
+    controlsRef.current = controls
     controls.enableZoom = true
     controls.minDistance = 0.8
     controls.maxDistance = 6
@@ -90,34 +125,57 @@ export function AvatarViewer3D({
         const maxDim = Math.max(size.x, size.y, size.z)
         model.scale.setScalar(2.0 / maxDim)
 
-        // Fix all materials to show vertex colors properly
+        // Fix materials for PIFuHD output, which stores colour as a
+        // COLOR_0 vertex attribute. Only force vertexColors when the
+        // geometry actually has that attribute — forcing it on a mesh
+        // without one makes WebGL feed (0,0,0) and renders solid black
+        // (e.g. the textured stub avatar).
+        let isPifuhdAvatar = false
         model.traverse((child) => {
           if (!(child as THREE.Mesh).isMesh) return
           const mesh = child as THREE.Mesh
+          const hasVertexColors = !!mesh.geometry.getAttribute('color')
 
-          const fixMaterial = (mat: THREE.Material) => {
-            // Replace with MeshLambertMaterial which renders
-            // vertex colors more accurately than MeshStandard
-            // for this type of reconstruction output
-            const newMat = new THREE.MeshLambertMaterial({
+          if (!hasVertexColors) return // keep original textured material
+          isPifuhdAvatar = true
+
+          // PIFuHD GLBs ship without normals (keeps files ~40% smaller);
+          // lit materials need them, so compute here — fast even at 40k verts.
+          if (!mesh.geometry.getAttribute('normal')) {
+            mesh.geometry.computeVertexNormals()
+          }
+
+          const fixMaterial = () => {
+            // MeshLambertMaterial renders vertex colors more accurately
+            // than MeshStandard for this type of reconstruction output
+            return new THREE.MeshLambertMaterial({
               vertexColors: true,
               // White base color so vertex colors show at full value
               color: new THREE.Color(1, 1, 1),
             })
-            return newMat
           }
 
           if (Array.isArray(mesh.material)) {
             mesh.material = mesh.material.map(fixMaterial)
           } else {
-            mesh.material = fixMaterial(mesh.material)
+            mesh.material = fixMaterial()
           }
         })
+
+        // PIFuHD exports face -Z while the camera sits at +Z; turn the
+        // avatar so users greet its front, not its back.
+        if (isPifuhdAvatar) model.rotation.y = Math.PI
 
         scene.add(model)
         setLoading(false)
       },
-      undefined,
+      (xhr) => {
+        // Download progress — total is 0 when the server streams without
+        // Content-Length (e.g. gzip), so only show a % when it's known.
+        if (xhr.total > 0) {
+          setLoadPct(Math.min(100, Math.round((xhr.loaded / xhr.total) * 100)))
+        }
+      },
       (err) => {
         console.error('GLB load error:', err)
         setError('Failed to load 3D model')
@@ -144,12 +202,20 @@ export function AvatarViewer3D({
     return () => {
       cancelAnimationFrame(animId)
       window.removeEventListener('resize', onResize)
+      controlsRef.current = null
       renderer.dispose()
       if (container.contains(renderer.domElement)) {
         container.removeChild(renderer.domElement)
       }
     }
   }, [glbUrl, height, autoRotate]);
+
+  const toggleRotate = () => {
+    const controls = controlsRef.current;
+    if (!controls) return;
+    controls.autoRotate = !controls.autoRotate;
+    setRotating(controls.autoRotate);
+  };
 
   return (
     <div className="relative w-full">
@@ -159,6 +225,25 @@ export function AvatarViewer3D({
         style={{ height }}
       />
 
+      {!loading && !error && (
+        <button
+          type="button"
+          onClick={toggleRotate}
+          title={rotating ? "Stop rotation" : "Auto-rotate"}
+          className="absolute right-3 top-3 flex items-center gap-1.5 rounded-full border border-border bg-background/80 px-3 py-1.5 text-xs font-medium text-foreground shadow-sm backdrop-blur transition-colors hover:bg-background"
+        >
+          {rotating ? (
+            <>
+              <Pause className="h-3.5 w-3.5" /> Stop
+            </>
+          ) : (
+            <>
+              <RotateCw className="h-3.5 w-3.5" /> Rotate
+            </>
+          )}
+        </button>
+      )}
+
       {loading && (
         <div
           className="absolute inset-0 flex items-center justify-center rounded-2xl bg-background/80"
@@ -166,7 +251,9 @@ export function AvatarViewer3D({
         >
           <div className="flex flex-col items-center gap-3">
             <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-            <p className="text-sm text-muted-foreground">Loading 3D model…</p>
+            <p className="text-sm text-muted-foreground">
+              {loadPct !== null ? `Loading 3D model… ${loadPct}%` : "Loading 3D model…"}
+            </p>
           </div>
         </div>
       )}

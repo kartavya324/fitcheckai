@@ -3,6 +3,7 @@ import { useState, useCallback, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
 import { toast } from "sonner";
 import { getErrorMessage, urlToImageFile, useCreateTryOnJob, fetchProductImage } from "@/lib/api";
+import { normalizeImageFile } from "@/lib/image";
 import {
   Upload,
   X,
@@ -202,20 +203,23 @@ function TryOnPage() {
     };
   }, [personImage, clothingImage]);
 
-  const setPersonFromFile = useCallback((file: File) => {
-    setPersonFile(file);
+  const setPersonFromFile = useCallback(async (file: File) => {
+    // Normalize on-device: HEIC → JPEG, EXIF baked, huge photos downscaled
+    const normalized = await normalizeImageFile(file);
+    setPersonFile(normalized);
     setPersonImage((prev) => {
       if (prev?.startsWith("blob:")) URL.revokeObjectURL(prev);
-      return URL.createObjectURL(file);
+      return URL.createObjectURL(normalized);
     });
   }, []);
 
   const setGarmentFromFile = useCallback(
-    (file: File, info?: { name: string; brand?: string; sourceUrl?: string }) => {
-      setGarmentFile(file);
+    async (file: File, info?: { name: string; brand?: string; sourceUrl?: string }) => {
+      const normalized = await normalizeImageFile(file);
+      setGarmentFile(normalized);
       setClothingImage((prev) => {
         if (prev?.startsWith("blob:")) URL.revokeObjectURL(prev);
-        return URL.createObjectURL(file);
+        return URL.createObjectURL(normalized);
       });
       setGarmentInfo({
         name: info?.name ?? file.name.replace(/\.[^.]+$/, ""),
@@ -231,8 +235,8 @@ function TryOnPage() {
     (e: React.DragEvent) => {
       e.preventDefault();
       const file = e.dataTransfer.files[0];
-      if (file && file.type.startsWith("image/")) {
-        setPersonFromFile(file);
+      if (file && (file.type.startsWith("image/") || /\.(heic|heif)$/i.test(file.name))) {
+        void setPersonFromFile(file);
       }
     },
     [setPersonFromFile],
@@ -241,7 +245,7 @@ function TryOnPage() {
   const handlePersonFile = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
-      if (file) setPersonFromFile(file);
+      if (file) void setPersonFromFile(file);
     },
     [setPersonFromFile],
   );
@@ -249,7 +253,7 @@ function TryOnPage() {
   const handleClothingFile = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
-      if (file) setGarmentFromFile(file);
+      if (file) void setGarmentFromFile(file);
     },
     [setGarmentFromFile],
   );
@@ -258,8 +262,8 @@ function TryOnPage() {
     (e: React.DragEvent) => {
       e.preventDefault();
       const file = e.dataTransfer.files[0];
-      if (file && file.type.startsWith("image/")) {
-        setGarmentFromFile(file);
+      if (file && (file.type.startsWith("image/") || /\.(heic|heif)$/i.test(file.name))) {
+        void setGarmentFromFile(file);
       }
     },
     [setGarmentFromFile],
@@ -886,7 +890,7 @@ function UploadArea({
             <Upload className="h-4 w-4" />
             Click or drag to upload
           </div>
-          <input type="file" accept="image/*" onChange={onFileSelect} className="hidden" />
+          <input type="file" accept="image/*,.heic,.heif" onChange={onFileSelect} className="hidden" />
         </label>
       )}
     </div>

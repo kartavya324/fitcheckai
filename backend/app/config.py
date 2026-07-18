@@ -5,10 +5,16 @@ from typing import Literal
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Anchor paths to the backend directory (parent of app/) so the server
+# behaves the same regardless of the process working directory.
+# Loading ".env" relative to cwd silently falls back to defaults
+# (e.g. AVATAR_MODE=stub) when launched from the repo root.
+BACKEND_DIR = Path(__file__).resolve().parent.parent
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(BACKEND_DIR / ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
         populate_by_name=True,
@@ -17,6 +23,14 @@ class Settings(BaseSettings):
     app_name: str = Field(default="fitcheck-api", alias="APP_NAME")
     app_version: str = Field(default="0.1.0", alias="APP_VERSION")
     storage_root: Path = Field(default=Path("./storage"), alias="STORAGE_ROOT")
+
+    @field_validator("storage_root", mode="after")
+    @classmethod
+    def anchor_storage_root(cls, value: Path) -> Path:
+        # Resolve relative storage paths against the backend dir, not cwd
+        if not value.is_absolute():
+            return (BACKEND_DIR / value).resolve()
+        return value
     public_base_url: str = Field(
         default="http://127.0.0.1:8001",
         alias="PUBLIC_BASE_URL",
@@ -38,7 +52,13 @@ class Settings(BaseSettings):
         alias="LOG_LEVEL",
     )
     allowed_content_types: list[str] = Field(
-        default=["image/jpeg", "image/png", "image/webp"],
+        default=[
+            "image/jpeg",
+            "image/png",
+            "image/webp",
+            "image/heic",
+            "image/heif",
+        ],
     )
     replicate_api_token: str | None = Field(default=None, alias="REPLICATE_API_TOKEN")
     hf_token: str | None = Field(default=None, alias="HF_TOKEN")

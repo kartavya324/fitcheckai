@@ -13,6 +13,13 @@ from texture_projection import project_texture_onto_mesh
 app = Flask(__name__)
 CORS(app)
 
+# iPhone HEIC support — lets PIL open .heic/.heif inputs
+try:
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
+except ImportError:
+    print("WARNING: pillow-heif not installed; HEIC inputs will fail")
+
 BASE_DIR = Path(__file__).parent
 PIFUHD_DIR = BASE_DIR / "pifuhd"
 CHECKPOINT_PATH = PIFUHD_DIR / "checkpoints" / "pifuhd.pt"
@@ -192,7 +199,10 @@ def prepare_input(image_path: str, out_person_path: str,
         rgba = remove_background_rgba(image_path)
     except Exception as e:
         print(f"BG removal failed ({e}); using original image")
-        rgba = Image.open(image_path).convert("RGBA")
+        from PIL import ImageOps
+        # rembg applies EXIF orientation internally; this fallback must too,
+        # or sideways phone photos produce sideways avatars.
+        rgba = ImageOps.exif_transpose(Image.open(image_path)).convert("RGBA")
 
     arr = np.array(rgba)
     ys, xs = np.where(arr[:, :, 3] > 128)
@@ -225,6 +235,12 @@ def prepare_input(image_path: str, out_person_path: str,
     return [off[0], off[1], nw, nh]
 
 
+# The 4GB GPU fits exactly one reconstruction at a time. Concurrent requests
+# (multiple browser tabs, retries) must queue, or both OOM and both fail.
+import threading
+_gpu_lock = threading.Lock()
+
+
 def run_pifuhd(image_path: str, output_dir: str) -> str:
     input_dir = Path(output_dir) / "input"
     input_dir.mkdir(parents=True, exist_ok=True)
@@ -249,45 +265,84 @@ def run_pifuhd(image_path: str, output_dir: str) -> str:
     out_dir = Path(output_dir) / "result"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Marching-cubes grid resolution dominates runtime (~O(res^3)). 512 is slow
-    # on a laptop RTX 3050; 256 is ~4-8x faster with a slightly coarser mesh.
-    # Override with PIFUHD_RESOLUTION=512 when you want maximum detail.
-    resolution = os.environ.get("PIFUHD_RESOLUTION", "256")
-
-    cmd = [
-        sys.executable, "-m", "apps.simple_test",
-        "--input_path", str(input_dir),
-        "--out_path", str(out_dir),
-        "--resolution", resolution,
-        "--use_rect",
-    ]
+    # Marching-cubes grid resolution dominates runtime (~O(res^3)) and VRAM.
+    # 512 needs more than the 4GB RTX 3050 has (CUDA OOM); 384 fits and gives
+    # a ~2.3x denser mesh than 256 — visibly better face structure. PIFuHD's
+    # recon.py swallows exceptions (prints and exits 0), so a too-high
+    # resolution silently yields no .obj — we therefore try the requested
+    # resolution and fall back to coarser grids automatically.
+    # Override the starting point with PIFUHD_RESOLUTION.
+    requested = os.environ.get("PIFUHD_RESOLUTION", "384")
+    fallbacks = ["512", "384", "256"]
+    resolutions = [requested] + [r for r in fallbacks if int(r) < int(requested)]
 
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = "0"
     env["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:256"
 
-    try:
-        result = subprocess.run(
-            cmd, cwd=str(PIFUHD_DIR),
-            capture_output=True, text=True,
-            timeout=600, env=env,
-        )
-    except subprocess.TimeoutExpired as e:
-        raise RuntimeError(f"PIFuHD timed out at resolution {resolution}: {e}")
+    last_output = ""
+    for resolution in resolutions:
+        print(f"Running PIFuHD at resolution {resolution}...", flush=True)
+        cmd = [
+            sys.executable, "-m", "apps.simple_test",
+            "--input_path", str(input_dir),
+            "--out_path", str(out_dir),
+            "--resolution", resolution,
+            "--use_rect",
+        ]
 
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"PIFuHD failed.\n"
-            f"STDOUT: {result.stdout[-2000:]}\n"
-            f"STDERR: {result.stderr[-2000:]}"
+        if not _gpu_lock.acquire(timeout=900):
+            raise RuntimeError("GPU busy for over 15 minutes; try again later")
+        try:
+            result = subprocess.run(
+                cmd, cwd=str(PIFUHD_DIR),
+                capture_output=True, text=True,
+                timeout=600, env=env,
+            )
+        except subprocess.TimeoutExpired:
+            print(f"PIFuHD timed out at resolution {resolution}; "
+                  f"trying coarser grid...", flush=True)
+            last_output = f"timeout at resolution {resolution}"
+            continue
+        finally:
+            _gpu_lock.release()
+
+        last_output = (
+            f"STDOUT: {result.stdout[-2000:]}\nSTDERR: {result.stderr[-2000:]}"
         )
 
-    # Check for OBJ output (the real success indicator)
-    obj_files = list(out_dir.rglob("*.obj"))
-    if not obj_files:
-        raise RuntimeError("PIFuHD exited 0 but produced no .obj file")
-    
-    return str(obj_files[0])
+        if result.returncode != 0:
+            raise RuntimeError(f"PIFuHD failed.\n{last_output}")
+
+        # OBJ output is the real success indicator (recon.py hides errors)
+        obj_files = list(out_dir.rglob("*.obj"))
+        if obj_files:
+            print(f"PIFuHD succeeded at resolution {resolution}", flush=True)
+            return str(obj_files[0])
+
+        print(f"No mesh at resolution {resolution} "
+              f"(likely GPU memory); trying coarser grid...", flush=True)
+        print(last_output, flush=True)
+
+    raise RuntimeError(
+        f"PIFuHD produced no .obj at any resolution "
+        f"({', '.join(resolutions)}).\n{last_output}"
+    )
+
+
+def _srgb_to_linear_u8(colors_u8):
+    """
+    Convert sRGB-encoded uint8 colors to linear-encoded uint8.
+
+    glTF stores COLOR_0 as LINEAR values, but our vertex colors are sampled
+    straight from photo pixels (sRGB). Without this conversion a spec-correct
+    viewer (three.js with sRGB output) renders the avatar noticeably darker
+    than the photo.
+    """
+    import numpy as np
+    c = colors_u8.astype(np.float64) / 255.0
+    lin = np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+    return np.clip(lin * 255.0 + 0.5, 0, 255).astype(np.uint8)
 
 
 def _dominant_hair_color(img):
@@ -459,18 +514,30 @@ def recolor_mesh_from_image(mesh, image_path: str, rect: list, back_image_path: 
                     )
                 colors[back] *= 0.92  # real data — only a touch of depth shading
             else:
-                # Synthesize a plausible back: blurred colour bands + hair.
-                from scipy.ndimage import gaussian_filter
-                sigma = max(img_h, img_w) * 0.025
+                # Synthesize a plausible back from the person's own clothing
+                # colours. Blurring the raw photo bleeds the white background
+                # into the wrap (grey streaks), so first replace every
+                # background pixel with its nearest person pixel — the blur
+                # then produces clean garment-colour bands.
+                from scipy.ndimage import gaussian_filter, distance_transform_edt
+                person_px = np.any(img < 240, axis=2)  # non-white = person
+                if person_px.any():
+                    _, (iy, ix) = distance_transform_edt(
+                        ~person_px, return_indices=True
+                    )
+                    img_fill = img[iy, ix].astype(np.float64)
+                else:
+                    img_fill = img.astype(np.float64)
+                sigma = max(img_h, img_w) * 0.02
                 img_blur = np.stack(
-                    [gaussian_filter(img[:, :, c].astype(np.float64), sigma) for c in range(3)],
+                    [gaussian_filter(img_fill[:, :, c], sigma) for c in range(3)],
                     axis=2,
                 )
                 for c in range(3):
                     colors[back, c] = map_coordinates(
                         img_blur[:, :, c], [py[back], px[back]], order=1, mode="nearest"
                     )
-                colors[back] *= 0.72  # depth shading
+                colors[back] *= 0.82  # gentler depth shading (was 0.72)
 
                 # Back of the head → hair colour (never a wrapped face)
                 yv = verts_ndc[:, 1]
@@ -511,6 +578,8 @@ def recolor_mesh_from_image(mesh, image_path: str, rect: list, back_image_path: 
 
     # ── Step 6: Apply colors back to the mesh ──
     colors_uint8 = np.clip(colors, 0, 255).astype(np.uint8)
+    # sRGB photo samples → linear, as the glTF COLOR_0 spec requires
+    colors_uint8 = _srgb_to_linear_u8(colors_uint8)
     # Add alpha channel (fully opaque)
     rgba = np.column_stack([colors_uint8, np.full(n_verts, 255, dtype=np.uint8)])
     mesh.visual = trimesh.visual.ColorVisuals(mesh=mesh, vertex_colors=rgba)
@@ -564,6 +633,19 @@ def convert_to_glb(
     except Exception as e:
         print(f"Smoothing skipped: {e}")
 
+    # Quadric decimation: adaptive, so flat regions collapse while curved
+    # detail (face, hands) keeps its density. Halves GLB size → faster loads.
+    try:
+        target_faces = int(os.environ.get("AVATAR_TARGET_FACES", "80000"))
+        if len(mesh.faces) > target_faces:
+            before = len(mesh.faces)
+            decimated = mesh.simplify_quadric_decimation(face_count=target_faces)
+            if len(decimated.faces) > 0:
+                mesh = decimated
+                print(f"Decimated mesh: {before} -> {len(mesh.faces)} faces")
+    except Exception as e:
+        print(f"Decimation skipped: {e}")
+
     # Rotate 180° about Y so the mesh faces the camera
     mesh.apply_transform(trimesh.transformations.rotation_matrix(np.pi, [0, 1, 0]))
 
@@ -602,12 +684,69 @@ def convert_to_glb(
     # 3. Warm neutral colour — last resort, never grey
     if not colored:
         n = len(mesh.vertices)
-        rgba = np.tile(np.array([200, 180, 165, 255], np.uint8), (n, 1))
+        skin = np.append(_srgb_to_linear_u8(np.array([[200, 180, 165]], np.uint8))[0], 255)
+        rgba = np.tile(skin.astype(np.uint8), (n, 1))
         mesh.visual = trimesh.visual.ColorVisuals(mesh=mesh, vertex_colors=rgba)
         print("Texture: applied neutral fallback colour")
 
     mesh.export(glb_path)
     return glb_path
+
+
+@app.route("/recolor", methods=["POST"])
+def recolor():
+    """
+    Re-texture an existing avatar GLB from a new photo of the same person
+    (e.g. a 2D virtual try-on result). The pose must match the photo the
+    avatar was generated from — IDM-VTON preserves pose, so its output
+    projects cleanly onto the same mesh.
+
+    Body: { "glb_base64": ..., "image_base64": ... }
+    Returns: { "glb_base64": ..., "size_bytes": ... }
+    """
+    try:
+        import trimesh
+
+        data = request.get_json()
+        if not data or "glb_base64" not in data or "image_base64" not in data:
+            return jsonify({"error": "glb_base64 and image_base64 required"}), 400
+
+        glb_bytes = base64.b64decode(data["glb_base64"])
+        image_bytes = base64.b64decode(data["image_base64"])
+        print(f"\nRecolor request: {len(glb_bytes)} byte GLB, "
+              f"{len(image_bytes)} byte image", flush=True)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            glb_in = os.path.join(tmp, "avatar.glb")
+            open(glb_in, "wb").write(glb_bytes)
+            img_raw = os.path.join(tmp, "input.jpg")
+            open(img_raw, "wb").write(image_bytes)
+
+            # Same 512 person-filled canvas the original texture used, so the
+            # projection lands on the same coordinates.
+            img_prepared = os.path.join(tmp, "person.jpg")
+            prepare_input(img_raw, img_prepared)
+
+            mesh = trimesh.load(glb_in, process=False)
+            if isinstance(mesh, trimesh.Scene):
+                mesh = max(mesh.geometry.values(), key=lambda g: len(g.vertices))
+
+            mesh = recolor_mesh_from_image(mesh, img_prepared, [0, 0, 512, 512])
+
+            glb_out = os.path.join(tmp, "avatar_recolored.glb")
+            mesh.export(glb_out)
+            out_bytes = open(glb_out, "rb").read()
+            print(f"Recolor done: {len(out_bytes)} bytes", flush=True)
+
+            return jsonify({
+                "glb_base64": base64.b64encode(out_bytes).decode(),
+                "size_bytes": len(out_bytes),
+            })
+
+    except Exception as e:
+        tb = traceback.format_exc()
+        print(tb, flush=True)
+        return jsonify({"error": str(e), "traceback": tb}), 500
 
 
 @app.route("/health", methods=["GET"])

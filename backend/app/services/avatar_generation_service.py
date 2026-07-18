@@ -182,7 +182,9 @@ class AvatarGenerationService:
             response = httpx.post(
                 f"{local_url}/generate",
                 json=payload,
-                timeout=400.0,
+                # Generous: PIFuHD may retry at coarser resolutions after a
+                # CUDA OOM (~3.5 min per failed attempt on a 4GB GPU).
+                timeout=900.0,
             )
             response.raise_for_status()
         except httpx.ConnectError as e:
@@ -227,6 +229,60 @@ class AvatarGenerationService:
             on_progress(100, "Avatar ready!")
 
         return result_path
+
+    def recolor_avatar(
+        self,
+        *,
+        glb_path: str,
+        image_path: str,
+        output_name: str,
+        on_progress: Callable[[int, str | None], None] | None = None,
+    ) -> str:
+        """Re-texture an existing avatar GLB from a new photo (e.g. a 2D
+        try-on result) via the local PIFuHD server's /recolor endpoint.
+        Returns relative path to the new .glb."""
+        local_url = getattr(self._settings, "local_inference_url", "http://localhost:8090")
+
+        if on_progress:
+            on_progress(70, "Projecting outfit onto your 3D avatar...")
+
+        payload = {
+            "glb_base64": base64.b64encode(open(glb_path, "rb").read()).decode(),
+            "image_base64": base64.b64encode(open(image_path, "rb").read()).decode(),
+        }
+
+        try:
+            response = httpx.post(
+                f"{local_url}/recolor", json=payload, timeout=180.0
+            )
+            response.raise_for_status()
+        except httpx.ConnectError as e:
+            raise AppError(
+                "Local PIFuHD server is not running. Start it first.",
+                code="PIFUHD_UNAVAILABLE",
+                status_code=503,
+            ) from e
+        except Exception as e:
+            raise AppError(
+                f"Avatar recolor failed: {e}",
+                code="PIFUHD_ERROR",
+                status_code=500,
+            ) from e
+
+        result = response.json()
+        if "error" in result:
+            raise AppError(
+                f"Avatar recolor failed: {result['error']}",
+                code="PIFUHD_ERROR",
+                status_code=500,
+            )
+
+        glb_bytes = base64.b64decode(result["glb_base64"])
+        avatar_dir = self._settings.storage_root / "avatars"
+        avatar_dir.mkdir(parents=True, exist_ok=True)
+        out_path = avatar_dir / f"{output_name}.glb"
+        out_path.write_bytes(glb_bytes)
+        return str(out_path.relative_to(self._settings.storage_root))
 
     def _save_avatar_glb(self, session_id: str, glb_bytes: bytes) -> str:
         """Save .glb bytes and return relative path."""

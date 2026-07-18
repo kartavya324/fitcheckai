@@ -9,9 +9,12 @@ import {
   ArrowRight,
   RotateCcw,
   Box,
+  Shirt,
+  Loader2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { createAvatar, getAvatarStatus } from "@/lib/api";
+import { createAvatar, getAvatarStatus, createAvatarTryon } from "@/lib/api";
+import { normalizeImageFile } from "@/lib/image";
 import type { AvatarAnalysis } from "@/lib/api";
 import { AvatarViewer3D } from "@/components/AvatarViewer3D";
 import { DetectedDetailsPanel } from "@/components/DetectedDetailsPanel";
@@ -32,6 +35,28 @@ export const Route = createFileRoute("/avatar")({
 
 type Phase = "upload" | "processing" | "complete" | "error";
 
+/** localStorage key for restoring the last generated avatar across reloads */
+const AVATAR_STORAGE_KEY = "fitcheck:last-avatar";
+
+interface StoredAvatar {
+  sessionId: string;
+  avatarUrl: string;
+  analysis: AvatarAnalysis | null;
+  savedAt: number;
+}
+
+function loadStoredAvatar(): StoredAvatar | null {
+  try {
+    const raw = localStorage.getItem(AVATAR_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as StoredAvatar;
+    if (!parsed.sessionId || !parsed.avatarUrl) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
 function AvatarPage() {
   const [phase, setPhase] = useState<Phase>("upload");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -39,6 +64,7 @@ function AvatarPage() {
   const [backFile, setBackFile] = useState<File | null>(null);
   const [backPreview, setBackPreview] = useState<string | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
+  const [sessionId, setSessionId] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
   const [stage, setStage] = useState("Starting...");
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
@@ -47,6 +73,17 @@ function AvatarPage() {
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
+
+  // Restore the last avatar after a reload (SaaS: don't lose work on refresh)
+  useEffect(() => {
+    const stored = loadStoredAvatar();
+    if (stored) {
+      setSessionId(stored.sessionId);
+      setAvatarUrl(stored.avatarUrl);
+      setAnalysis(stored.analysis);
+      setPhase("complete");
+    }
+  }, []);
 
   // Polling logic
   useEffect(() => {
@@ -63,6 +100,22 @@ function AvatarPage() {
           setAnalysis(res.analysis ?? null);
           setPhase("complete");
           if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+          // Persist so a page reload restores this avatar
+          try {
+            if (res.avatar_url && sessionId) {
+              localStorage.setItem(
+                AVATAR_STORAGE_KEY,
+                JSON.stringify({
+                  sessionId,
+                  avatarUrl: res.avatar_url,
+                  analysis: res.analysis ?? null,
+                  savedAt: Date.now(),
+                } satisfies StoredAvatar),
+              );
+            }
+          } catch {
+            // Storage full/blocked — persistence is best-effort
+          }
         } else if (res.status === "failed") {
           setError(
             res.error?.message ??
@@ -79,20 +132,23 @@ function AvatarPage() {
     return () => {
       if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
     };
-  }, [jobId, phase]);
+  }, [jobId, phase, sessionId]);
 
-  const handleFileSelect = useCallback((file: File) => {
-    if (!file.type.startsWith("image/")) return;
-    setSelectedFile(file);
-    setPreviewUrl(URL.createObjectURL(file));
+  const handleFileSelect = useCallback(async (file: File) => {
+    if (!file.type.startsWith("image/") && !/\.(heic|heif)$/i.test(file.name)) return;
+    // Normalize on-device: HEIC → JPEG, EXIF baked, huge photos downscaled
+    const normalized = await normalizeImageFile(file);
+    setSelectedFile(normalized);
+    setPreviewUrl(URL.createObjectURL(normalized));
   }, []);
 
-  const handleBackSelect = useCallback((file: File) => {
-    if (!file.type.startsWith("image/")) return;
-    setBackFile(file);
+  const handleBackSelect = useCallback(async (file: File) => {
+    if (!file.type.startsWith("image/") && !/\.(heic|heif)$/i.test(file.name)) return;
+    const normalized = await normalizeImageFile(file);
+    setBackFile(normalized);
     setBackPreview((prev) => {
       if (prev?.startsWith("blob:")) URL.revokeObjectURL(prev);
-      return URL.createObjectURL(file);
+      return URL.createObjectURL(normalized);
     });
   }, []);
 
@@ -104,6 +160,7 @@ function AvatarPage() {
       setStage("Starting...");
       const result = await createAvatar(selectedFile, backFile);
       setJobId(result.job_id);
+      setSessionId(result.session_id);
     } catch (e) {
       setPhase("error");
       setError(String(e));
@@ -111,12 +168,18 @@ function AvatarPage() {
   }, [selectedFile]);
 
   const handleReset = useCallback(() => {
+    try {
+      localStorage.removeItem(AVATAR_STORAGE_KEY);
+    } catch {
+      // best-effort
+    }
     setPhase("upload");
     setSelectedFile(null);
     setPreviewUrl(null);
     setBackFile(null);
     setBackPreview(null);
     setJobId(null);
+    setSessionId(null);
     setProgress(0);
     setStage("Starting...");
     setAvatarUrl(null);
@@ -177,7 +240,12 @@ function AvatarPage() {
       )}
 
       {isComplete && (
-        <CompletePhase avatarUrl={avatarUrl} analysis={analysis} onReset={handleReset} />
+        <CompletePhase
+          avatarUrl={avatarUrl}
+          sessionId={sessionId}
+          analysis={analysis}
+          onReset={handleReset}
+        />
       )}
 
       {phase === "error" && (
@@ -250,7 +318,7 @@ function UploadPhase({
         <input
           ref={fileInputRef}
           type="file"
-          accept="image/*"
+          accept="image/*,.heic,.heif"
           className="hidden"
           onChange={(e) => {
             const file = e.target.files?.[0];
@@ -371,7 +439,7 @@ function UploadPhase({
           <input
             ref={backInputRef}
             type="file"
-            accept="image/*"
+            accept="image/*,.heic,.heif"
             className="hidden"
             onChange={(e) => {
               const file = e.target.files?.[0];
@@ -494,13 +562,21 @@ function ProcessingPhase({
 
 function CompletePhase({
   avatarUrl,
+  sessionId,
   analysis,
   onReset,
 }: {
   avatarUrl: string;
+  sessionId: string | null;
   analysis: AvatarAnalysis | null;
   onReset: () => void;
 }) {
+  const [tryonAvatarUrl, setTryonAvatarUrl] = useState<string | null>(null);
+  const [tryonImageUrl, setTryonImageUrl] = useState<string | null>(null);
+  const [showTryon, setShowTryon] = useState(true);
+
+  const displayedUrl = tryonAvatarUrl && showTryon ? tryonAvatarUrl : avatarUrl;
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 16 }}
@@ -511,7 +587,9 @@ function CompletePhase({
       <div className="mb-6 flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 dark:border-emerald-800 dark:bg-emerald-950">
         <CheckCircle2 className="h-5 w-5 text-emerald-600 dark:text-emerald-400" />
         <p className="text-sm font-medium text-emerald-700 dark:text-emerald-300">
-          Your avatar is ready!
+          {tryonAvatarUrl && showTryon
+            ? "Here's your new outfit!"
+            : "Your avatar is ready!"}
         </p>
       </div>
 
@@ -519,7 +597,36 @@ function CompletePhase({
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_280px]">
         {/* Left: 3D Viewer */}
         <div>
-          <AvatarViewer3D glbUrl={avatarUrl} height={520} autoRotate />
+          <AvatarViewer3D glbUrl={displayedUrl} height={520} />
+
+          {/* Original / New outfit toggle */}
+          {tryonAvatarUrl && (
+            <div className="mt-3 flex justify-center gap-2">
+              <button
+                type="button"
+                onClick={() => setShowTryon(false)}
+                className={`rounded-full border px-4 py-1.5 text-xs font-medium transition-colors ${
+                  !showTryon
+                    ? "border-foreground bg-foreground text-background"
+                    : "border-border bg-card text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                Original
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowTryon(true)}
+                className={`rounded-full border px-4 py-1.5 text-xs font-medium transition-colors ${
+                  showTryon
+                    ? "border-foreground bg-foreground text-background"
+                    : "border-border bg-card text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                New Outfit
+              </button>
+            </div>
+          )}
+
           <p className="mt-3 text-center text-xs text-muted-foreground">
             Drag to rotate · Scroll to zoom
           </p>
@@ -529,21 +636,34 @@ function CompletePhase({
         <DetectedDetailsPanel analysis={analysis} />
       </div>
 
-      {/* Actions */}
-      <div className="mt-6 flex gap-3">
-        <Link to="/try-on" className="flex-1">
+      {/* Try clothes on this avatar */}
+      {sessionId && (
+        <AvatarTryOnPanel
+          sessionId={sessionId}
+          tryonImageUrl={tryonImageUrl}
+          onComplete={(glbUrl, imageUrl) => {
+            setTryonAvatarUrl(glbUrl);
+            setTryonImageUrl(imageUrl);
+            setShowTryon(true);
+          }}
+        />
+      )}
+
+      {/* Actions — wraps on narrow screens instead of overflowing */}
+      <div className="mt-6 flex flex-wrap gap-3">
+        <Link to="/try-on" className="min-w-[200px] flex-1">
           <Button
             className="w-full gap-2 bg-foreground text-background hover:bg-foreground/90"
             size="lg"
           >
-            Try On Clothes
+            2D Photo Try-On
             <ArrowRight className="h-4 w-4" />
           </Button>
         </Link>
         <Button
           variant="outline"
           size="lg"
-          className="gap-2"
+          className="flex-1 gap-2 sm:flex-none"
           onClick={onReset}
         >
           <RotateCcw className="h-4 w-4" />
@@ -551,6 +671,193 @@ function CompletePhase({
         </Button>
       </div>
     </motion.div>
+  );
+}
+
+/* ─── Avatar Try-On Panel ────────────────────────────────── */
+
+const GARMENT_CATEGORIES = [
+  { value: "upper_body", label: "Top" },
+  { value: "lower_body", label: "Bottom" },
+  { value: "dresses", label: "Dress" },
+] as const;
+
+function AvatarTryOnPanel({
+  sessionId,
+  tryonImageUrl,
+  onComplete,
+}: {
+  sessionId: string;
+  tryonImageUrl: string | null;
+  onComplete: (glbUrl: string, imageUrl: string | null) => void;
+}) {
+  const [garmentFile, setGarmentFile] = useState<File | null>(null);
+  const [garmentPreview, setGarmentPreview] = useState<string | null>(null);
+  const [category, setCategory] = useState<string>("upper_body");
+  const [state, setState] = useState<"idle" | "processing" | "error">("idle");
+  const [progress, setProgress] = useState(0);
+  const [stage, setStage] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Clear the poll on unmount
+  useEffect(() => {
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, []);
+
+  const handleGarmentSelect = async (file: File) => {
+    if (!file.type.startsWith("image/") && !/\.(heic|heif)$/i.test(file.name)) return;
+    const normalized = await normalizeImageFile(file);
+    setGarmentFile(normalized);
+    setGarmentPreview((prev) => {
+      if (prev?.startsWith("blob:")) URL.revokeObjectURL(prev);
+      return URL.createObjectURL(normalized);
+    });
+  };
+
+  const handleTryOn = async () => {
+    if (!garmentFile) return;
+    setState("processing");
+    setProgress(0);
+    setStage("Starting...");
+    setError(null);
+
+    try {
+      const { job_id } = await createAvatarTryon(sessionId, garmentFile, category);
+
+      pollRef.current = setInterval(async () => {
+        try {
+          const res = await getAvatarStatus(job_id);
+          setProgress(res.progress);
+          setStage(res.stage || "Processing...");
+
+          if (res.status === "completed" && res.avatar_url) {
+            if (pollRef.current) clearInterval(pollRef.current);
+            setState("idle");
+            onComplete(res.avatar_url, res.tryon_image_url ?? null);
+          } else if (res.status === "failed") {
+            if (pollRef.current) clearInterval(pollRef.current);
+            setState("error");
+            setError(res.error?.message ?? "Try-on failed. Please try again.");
+          }
+        } catch {
+          // Silently retry on network blips
+        }
+      }, 2000);
+    } catch (e) {
+      setState("error");
+      setError(String(e));
+    }
+  };
+
+  return (
+    <div className="mt-6 rounded-2xl border border-border bg-card p-5">
+      <div className="flex items-center gap-2">
+        <Shirt className="h-4 w-4 text-muted-foreground" />
+        <h3 className="text-sm font-semibold uppercase tracking-wide text-foreground">
+          Try Clothes On This Avatar
+        </h3>
+      </div>
+      <p className="mt-1 text-xs text-muted-foreground">
+        Upload a garment photo — we dress your photo with AI, then wrap the
+        outfit onto your 3D avatar.
+      </p>
+
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/*,.heic,.heif"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) handleGarmentSelect(file);
+        }}
+      />
+
+      {state === "processing" ? (
+        <div className="mt-4 flex flex-col items-center gap-3 py-4">
+          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+          <p className="text-sm text-muted-foreground">{stage}</p>
+          <div className="h-1.5 w-full max-w-xs overflow-hidden rounded-full bg-muted">
+            <div
+              className="h-full rounded-full bg-foreground transition-all duration-500"
+              style={{ width: `${progress}%` }}
+            />
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {progress}% · takes 1–3 minutes
+          </p>
+        </div>
+      ) : (
+        <div className="mt-4 flex flex-wrap items-center gap-4">
+          {/* Garment thumbnail / upload button */}
+          <button
+            type="button"
+            onClick={() => inputRef.current?.click()}
+            className="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-dashed border-border bg-muted/30 hover:border-foreground/40"
+          >
+            {garmentPreview ? (
+              <img
+                src={garmentPreview}
+                alt="Garment"
+                className="h-full w-full object-cover"
+              />
+            ) : (
+              <Upload className="h-5 w-5 text-muted-foreground" />
+            )}
+          </button>
+
+          {/* Category pills */}
+          <div className="flex gap-2">
+            {GARMENT_CATEGORIES.map((c) => (
+              <button
+                key={c.value}
+                type="button"
+                onClick={() => setCategory(c.value)}
+                className={`rounded-full border px-4 py-1.5 text-xs font-medium transition-colors ${
+                  category === c.value
+                    ? "border-foreground bg-foreground text-background"
+                    : "border-border bg-card text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {c.label}
+              </button>
+            ))}
+          </div>
+
+          <Button
+            className="ml-auto gap-2 bg-foreground text-background hover:bg-foreground/90"
+            disabled={!garmentFile}
+            onClick={handleTryOn}
+          >
+            <Shirt className="h-4 w-4" />
+            Try It On
+          </Button>
+        </div>
+      )}
+
+      {state === "error" && error && (
+        <p className="mt-3 text-xs text-destructive">{error}</p>
+      )}
+
+      {/* 2D dressed-photo preview from the last successful try-on */}
+      {tryonImageUrl && state === "idle" && (
+        <div className="mt-4 flex items-center gap-3 border-t border-border/60 pt-4">
+          <img
+            src={tryonImageUrl}
+            alt="Try-on result"
+            className="h-24 rounded-lg border border-border object-contain"
+          />
+          <p className="text-xs text-muted-foreground">
+            2D try-on result used to texture your avatar. Toggle
+            "Original / New Outfit" under the viewer to compare.
+          </p>
+        </div>
+      )}
+    </div>
   );
 }
 

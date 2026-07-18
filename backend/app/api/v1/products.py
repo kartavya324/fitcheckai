@@ -18,7 +18,17 @@ router = APIRouter(prefix="/products", tags=["products"])
 class ProductFetchRequest(BaseModel):
     url: HttpUrl
 
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+# Browser-like headers reduce bot-wall responses from retail sites
+BROWSER_HEADERS = {
+    "User-Agent": USER_AGENT,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-IN,en;q=0.9",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Upgrade-Insecure-Requests": "1",
+}
 MAX_IMAGE_SIZE = 10 * 1024 * 1024
 MAX_REDIRECTS = 5
 
@@ -63,12 +73,84 @@ async def _safe_get(client: httpx.AsyncClient, url: str, **kwargs) -> httpx.Resp
         return resp
     raise AppError("Too many redirects", code="TOO_MANY_REDIRECTS", status_code=400)
 
-def get_largest_image(soup: BeautifulSoup) -> str | None:
-    # First try og:image
+def _amazon_image(soup: BeautifulSoup, html: str) -> str | None:
+    """Amazon product pages don't expose og:image; the main photo lives on
+    #landingImage (data-old-hires / data-a-dynamic-image) or in hiRes JSON."""
+    import json
+    import re
+
+    landing = soup.find("img", id="landingImage")
+    if landing:
+        hires = landing.get("data-old-hires")
+        if hires and str(hires).startswith("http"):
+            return str(hires)
+        dyn = landing.get("data-a-dynamic-image")
+        if dyn:
+            try:
+                candidates = json.loads(dyn)  # {url: [w, h], ...}
+                if candidates:
+                    return max(
+                        candidates, key=lambda u: candidates[u][0] * candidates[u][1]
+                    )
+            except (json.JSONDecodeError, TypeError, IndexError):
+                pass
+        if landing.get("src", "").startswith("http"):
+            return str(landing["src"])
+
+    m = re.search(r'"hiRes"\s*:\s*"(https://[^"]+)"', html)
+    if m:
+        return m.group(1)
+    return None
+
+
+def _jsonld_product_image(soup: BeautifulSoup) -> str | None:
+    """schema.org Product markup — many stores (Flipkart, Ajio, boutiques)."""
+    import json
+
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            data = json.loads(script.string or "")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        items = data if isinstance(data, list) else [data]
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if item.get("@type") not in ("Product", "ProductGroup"):
+                continue
+            image = item.get("image")
+            if isinstance(image, str) and image.startswith("http"):
+                return image
+            if isinstance(image, list) and image:
+                first = image[0]
+                if isinstance(first, str) and first.startswith("http"):
+                    return first
+                if isinstance(first, dict) and str(first.get("url", "")).startswith("http"):
+                    return str(first["url"])
+    return None
+
+
+def get_largest_image(soup: BeautifulSoup, html: str = "") -> str | None:
+    # Site-specific extractors first — the generic paths miss these stores
+    amazon = _amazon_image(soup, html)
+    if amazon:
+        return amazon
+
+    # og:image (Myntra, most stores)
     og_image = soup.find("meta", property="og:image")
     if og_image and og_image.get("content"):
         return str(og_image["content"])
-        
+
+    # schema.org Product JSON-LD
+    jsonld = _jsonld_product_image(soup)
+    if jsonld:
+        return jsonld
+
+    # twitter:image
+    tw = soup.find("meta", attrs={"name": "twitter:image"})
+    if tw and tw.get("content"):
+        return str(tw["content"])
+
     # Then largest img by width/height
     images = soup.find_all("img")
     best_img = None
@@ -113,17 +195,25 @@ async def fetch_product_image(
 ) -> UploadCreatedResponse:
     url_str = str(body.url)
 
-    async with httpx.AsyncClient(headers={"User-Agent": USER_AGENT}) as client:
+    # trust_env=False: ignore HTTP(S)_PROXY env vars — proxied egress gets
+    # bot-walled by retail sites (Amazon returns a 3.7KB interstitial).
+    async with httpx.AsyncClient(headers=BROWSER_HEADERS, trust_env=False) as client:
         try:
-            resp = await _safe_get(client, url_str, timeout=10.0)
+            resp = await _safe_get(client, url_str, timeout=15.0)
             resp.raise_for_status()
         except httpx.RequestError as e:
             raise AppError(f"Failed to fetch URL: {str(e)}", code="FETCH_ERROR", status_code=400)
         except httpx.HTTPStatusError as e:
             raise AppError(f"Site returned error: {e.response.status_code}", code="SITE_ERROR", status_code=400)
-            
+
         soup = BeautifulSoup(resp.text, "html.parser")
-        img_url = get_largest_image(soup)
+        img_url = get_largest_image(soup, resp.text)
+        if not img_url:
+            import logging
+            logging.getLogger(__name__).warning(
+                "products/fetch extraction failed: status=%s len=%s url=%s",
+                resp.status_code, len(resp.text), url_str,
+            )
         
         if not img_url:
             raise AppError("No product image found on the provided page", code="NO_IMAGE_FOUND", status_code=400)
@@ -161,7 +251,14 @@ async def fetch_product_image(
                 content_type=content_type,
                 data=image_bytes,
             )
-            url = storage_service.build_upload_url(upload_record.upload_id, upload_record.kind)
+            from app.api.v1.uploads import _extension_for_record
+            from app.config import get_settings
+            url = storage_service.build_upload_url(
+                upload_record.upload_id,
+                upload_record.kind,
+                _extension_for_record(upload_record),
+                base_url=get_settings().public_base_url,
+            )
             return record_to_created_response(upload_record, url=url)
         except Exception as e:
             if isinstance(e, AppError):

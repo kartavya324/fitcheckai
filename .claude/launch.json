@@ -1,0 +1,35 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "frontend",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--prefix", "frontend"],
+      "port": 8080
+    },
+    {
+      "name": "backend",
+      "runtimeExecutable": "backend\\venv\\Scripts\\python.exe",
+      "runtimeArgs": ["-m", "uvicorn", "app.main:app", "--reload", "--port", "8001", "--app-dir", "backend"],
+      "port": 8001
+    },
+    {
+      "name": "pifuhd",
+      "runtimeExecutable": "backend\\venv\\Scripts\\python.exe",
+      "runtimeArgs": ["backend\\pifuhd_server.py"],
+      "port": 8090
+    },
+    {
+      "name": "viewer-test",
+      "runtimeExecutable": "backend\\venv\\Scripts\\python.exe",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8765",
+        "--directory",
+        "C:\\Users\\karta\\AppData\\Local\\Temp\\claude\\C--Users-karta-Desktop-Projects-fitcheckai\\5ee2bbc5-7adf-4917-b2df-811601a10e09\\scratchpad"
+      ],
+      "port": 8765
+    }
+  ]
+}
