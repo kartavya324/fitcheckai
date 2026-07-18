@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -36,6 +37,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     setup_logging(settings)
     settings.ensure_storage_dirs()
     Base.metadata.create_all(bind=engine)
+
+    # iPhone HEIC support: teaches Pillow to open .heic/.heif everywhere
+    try:
+        from pillow_heif import register_heif_opener
+        register_heif_opener()
+    except ImportError:
+        logger.warning("pillow-heif not installed; HEIC uploads will fail")
     
     asyncio.create_task(_keepalive_hf_space())
     yield
@@ -105,6 +113,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Compress large responses (GLB avatars via /files shrink ~25-35%)
+    app.add_middleware(GZipMiddleware, minimum_size=8192)
 
     register_exception_handlers(app)
 

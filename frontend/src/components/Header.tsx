@@ -39,7 +39,7 @@ export function Header() {
           </span>
         </Link>
 
-        <nav className="hidden items-center gap-1 md:flex">
+        <nav className="hidden items-center gap-1 lg:flex">
           {navLinks.map((link) => (
             <Link
               key={link.to}
@@ -66,7 +66,7 @@ export function Header() {
           </Link>
         </nav>
 
-        <div className="flex items-center gap-2 md:hidden">
+        <div className="flex items-center gap-2 lg:hidden">
           <Button
             variant="ghost"
             size="icon"
@@ -81,7 +81,7 @@ export function Header() {
       </div>
 
       {mobileOpen && (
-        <div className="border-t border-border bg-background px-4 py-4 md:hidden">
+        <div className="border-t border-border bg-background px-4 py-4 lg:hidden">
           <nav className="flex flex-col gap-2">
             {navLinks.map((link) => (
               <Link

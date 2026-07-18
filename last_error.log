@@ -1,0 +1,7 @@
+Traceback (most recent call last):
+  File "C:\Users\karta\Desktop\Projects\fitcheckai\backend\pifuhd_server.py", line 680, in generate
+    obj_path = run_pifuhd(img_path, tmp)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\karta\Desktop\Projects\fitcheckai\backend\pifuhd_server.py", line 288, in run_pifuhd
+    raise RuntimeError("PIFuHD exited 0 but produced no .obj file")
+RuntimeError: PIFuHD exited 0 but produced no .obj file

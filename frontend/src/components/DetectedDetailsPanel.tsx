@@ -13,8 +13,9 @@ export function DetectedDetailsPanel({ analysis }: DetectedDetailsPanelProps) {
 
   return (
     <motion.div
-      initial={{ opacity: 0, x: 20 }}
-      animate={{ opacity: 1, x: 0 }}
+      // Slide vertically: an x-offset overflows the viewport on mobile
+      initial={{ opacity: 0, y: 16 }}
+      animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.5, delay: 0.2 }}
       className="flex flex-col gap-4"
     >
