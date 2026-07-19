@@ -1,0 +1,37 @@
+# ─────────────────────────────────────────────────────────────────────────
+# FitCheck AI — PIFuHD GPU inference server dependencies
+# ─────────────────────────────────────────────────────────────────────────
+# These power pifuhd_server.py: photo → 3D body mesh → textured .glb avatar,
+# plus the /recolor endpoint behind "try clothes on your 3D avatar".
+#
+# IMPORTANT: install torch + torchvision FIRST — they need a CUDA-matched
+# index URL that pip can't infer from this file. See setup_local_gpu.sh
+# (Linux/macOS), run_windows.bat (Windows), or LOCAL_GPU_SETUP.md. Example:
+#
+#     pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+#
+# Then, inside the same venv:
+#
+#     pip install -r requirements-gpu.txt
+# ─────────────────────────────────────────────────────────────────────────
+
+# Web server that exposes /generate, /recolor, /health on port 8090
+flask>=3.0,<4.0
+flask-cors>=4.0,<6.0
+
+# Mesh loading, smoothing, decimation, GLB export
+trimesh>=4.0,<5.0
+fast-simplification>=0.1.7      # adaptive quadric decimation backend for trimesh
+
+# Person segmentation / background removal (u2net_human_seg model)
+rembg>=2.0.50
+onnxruntime-gpu>=1.17           # runs rembg on the GPU.
+                                # No CUDA/cuDNN match? swap for: onnxruntime>=1.17
+
+# Numerical + imaging stack used across the projection pipeline
+scipy>=1.11                     # connected components, KD-trees, colour seam-blend
+numpy>=1.24,<2.0                # PIFuHD predates numpy 2.0 — pin to 1.x
+pillow>=10.0                    # image decode/encode
+pillow-heif>=0.16               # iPhone HEIC/HEIF input support
+opencv-python>=4.8              # Haar-cascade face detection (photo analysis)
+requests>=2.31                  # model-weight downloads (download_weights.py)

@@ -1,65 +1,47 @@
 @echo off
+REM ─────────────────────────────────────────────────────────────────────
+REM  FitCheck AI — one-time local GPU setup (Windows)
+REM  Linux/macOS users: run ./setup_local_gpu.sh instead.
+REM  Full walkthrough + troubleshooting: LOCAL_GPU_SETUP.md
+REM
+REM  Torch CUDA build: set CUDA before running (default cu121).
+REM    set CUDA=cu118 & run_windows.bat   (older driver / broadest compat)
+REM ─────────────────────────────────────────────────────────────────────
 echo Setting up FitCheck AI backend...
 cd /d %~dp0
+if "%CUDA%"=="" set CUDA=cu121
 
+echo [1/6] Creating venv...
 python -m venv venv
 call venv\Scripts\activate
+python -m pip install --upgrade pip
 
-pip install torch==2.5.1+cu118 torchvision==0.20.1+cu118 --index-url https://download.pytorch.org/whl/cu118
+echo [2/6] Installing torch + torchvision (%CUDA%)...
+pip install torch torchvision --index-url https://download.pytorch.org/whl/%CUDA%
 
+echo [3/6] Installing backend + GPU-server dependencies...
 pip install -r requirements.txt
-pip install flask flask-cors trimesh
-pip install rembg onnxruntime
-pip install scipy
-pip install "rembg[gpu]"
-pip install onnxruntime-gpu || pip install onnxruntime
+pip install -r requirements-gpu.txt
 
-echo Installing PIFuHD...
+echo [4/6] Cloning PIFuHD...
 if not exist pifuhd (
     git clone https://github.com/facebookresearch/pifuhd.git
+    pip install -r pifuhd\requirements.txt
 )
-cd pifuhd
-pip install -r requirements.txt
-cd ..
 
-echo Downloading PIFuHD weights (1.5GB)...
-python -c "
-import requests, os
-from pathlib import Path
-url = 'https://dl.fbaipublicfiles.com/pifuhd/checkpoints/pifuhd.pt'
-path = Path('pifuhd/checkpoints/pifuhd.pt')
-path.parent.mkdir(parents=True, exist_ok=True)
-if not path.exists():
-    print('Downloading...')
-    r = requests.get(url, stream=True)
-    total = int(r.headers.get('content-length', 0))
-    downloaded = 0
-    with open(path, 'wb') as f:
-        for chunk in r.iter_content(8192):
-            f.write(chunk)
-            downloaded += len(chunk)
-            print(f'\r{downloaded*100//total}%%', end='', flush=True)
-    print('\nDone!')
-else:
-    print('Already downloaded.')
-"
+echo [5/6] Downloading PIFuHD weights (~1.5GB) + face cascade...
+python download_weights.py
 
-echo Downloading Haar cascade frontal face xml...
-python -c "
-import requests, os
-from pathlib import Path
-url = 'https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_default.xml'
-path = Path('assets/haarcascade_frontalface_default.xml')
-path.parent.mkdir(parents=True, exist_ok=True)
-if not path.exists():
-    print('Downloading...')
-    r = requests.get(url)
-    path.write_bytes(r.content)
-    print('Done!')
-else:
-    print('Already downloaded.')
-"
+echo [6/6] Verifying install...
+python check_deps.py
 
-echo Setup complete!
+echo.
+echo ==================================================
+echo  Setup complete.
+echo    Window 1:  start_pifuhd_server.bat   (GPU, port 8090)
+echo    Window 2:  start_backend.bat         (API,  port 8001)
+echo    Window 3:  cd ..\frontend ^&^& npm install ^&^& npm run dev
+echo  Then set AVATAR_MODE=local_pifuhd in backend\.env
+echo ==================================================
 pause
 

@@ -4,7 +4,6 @@ import base64
 import tempfile
 import subprocess
 import traceback
-import shutil
 from pathlib import Path
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -12,6 +11,7 @@ from texture_projection import project_texture_onto_mesh
 
 app = Flask(__name__)
 CORS(app)
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50 MB for large base64 images
 
 # iPhone HEIC support — lets PIL open .heic/.heif inputs
 try:
@@ -235,10 +235,32 @@ def prepare_input(image_path: str, out_person_path: str,
     return [off[0], off[1], nw, nh]
 
 
-# The 4GB GPU fits exactly one reconstruction at a time. Concurrent requests
+# A single reconstruction can saturate GPU memory. Concurrent requests
 # (multiple browser tabs, retries) must queue, or both OOM and both fail.
 import threading
 _gpu_lock = threading.Lock()
+
+
+def _default_resolution() -> str:
+    """Pick a marching-cubes grid resolution from the GPU's VRAM.
+
+    Higher resolution → crisper face/body detail, but O(res³) more VRAM and
+    time. Heavy GPUs get a sharp 512³ avatar automatically; smaller cards get
+    a value that fits. Users can force a fixed value with PIFUHD_RESOLUTION;
+    run_pifuhd still auto-falls back to a coarser grid on CUDA OOM either way.
+    """
+    try:
+        import torch
+        if torch.cuda.is_available():
+            vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+            if vram_gb >= 16:
+                return "512"
+            if vram_gb >= 8:
+                return "384"
+            return "256"
+    except Exception:
+        pass
+    return "256"
 
 
 def run_pifuhd(image_path: str, output_dir: str) -> str:
@@ -266,13 +288,13 @@ def run_pifuhd(image_path: str, output_dir: str) -> str:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Marching-cubes grid resolution dominates runtime (~O(res^3)) and VRAM.
-    # 512 needs more than the 4GB RTX 3050 has (CUDA OOM); 384 fits and gives
-    # a ~2.3x denser mesh than 256 — visibly better face structure. PIFuHD's
-    # recon.py swallows exceptions (prints and exits 0), so a too-high
-    # resolution silently yields no .obj — we therefore try the requested
-    # resolution and fall back to coarser grids automatically.
-    # Override the starting point with PIFUHD_RESOLUTION.
-    requested = os.environ.get("PIFUHD_RESOLUTION", "384")
+    # 512 gives a ~2.3x denser mesh than 256 (visibly better face structure)
+    # but needs a roomy GPU; on a 4GB card it CUDA-OOMs. PIFuHD's recon.py
+    # swallows exceptions (prints and exits 0), so a too-high resolution
+    # silently yields no .obj — we therefore try the requested resolution and
+    # fall back to coarser grids automatically.
+    # Default is auto-picked from VRAM; override with PIFUHD_RESOLUTION.
+    requested = os.environ.get("PIFUHD_RESOLUTION") or _default_resolution()
     fallbacks = ["512", "384", "256"]
     resolutions = [requested] + [r for r in fallbacks if int(r) < int(requested)]
 
@@ -878,13 +900,6 @@ def generate():
                     ).decode()
                     response_data["recolored_size_bytes"] = len(recolored_bytes)
 
-                    # Copy to persistent workspace folder for manual verification
-                    workspace_dir = Path("c:/Users/karta/Desktop/Projects/fitcheckai/backend")
-                    if workspace_dir.exists():
-                        shutil.copy2(glb_path, str(workspace_dir / "test_avatar_output.glb"))
-                        shutil.copy2(recolored_glb_path, str(workspace_dir / "test_avatar_recolored.glb"))
-                        print(f"Copied GLB files to workspace directory {workspace_dir} for visual verification.", flush=True)
-
                 except Exception as e:
                     print(f"RECOLOR_DEBUG failed: {e}", flush=True)
                     import traceback as _tb
@@ -910,9 +925,18 @@ if __name__ == "__main__":
     check_setup()
     import torch
     if torch.cuda.is_available():
-        print(f"GPU: {torch.cuda.get_device_name(0)}", flush=True)
+        vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+        print(f"GPU: {torch.cuda.get_device_name(0)} ({vram_gb:.1f} GB VRAM)", flush=True)
+        forced = os.environ.get("PIFUHD_RESOLUTION")
+        chosen = forced or _default_resolution()
+        print(
+            f"Mesh resolution: {chosen}"
+            + (" (PIFUHD_RESOLUTION)" if forced else " (auto from VRAM)"),
+            flush=True,
+        )
     else:
-        print("WARNING: No GPU found", flush=True)
+        print("WARNING: No CUDA GPU found — reconstruction will be very slow "
+              "or fail. This server needs an NVIDIA GPU.", flush=True)
     print("Server: http://localhost:8090", flush=True)
     print("=" * 50, flush=True)
     app.run(host="0.0.0.0", port=8090, debug=False)

@@ -51,8 +51,8 @@ class AvatarGenerationService:
             on_progress(10, "Initialising avatar pipeline...")
 
         glb_urls = [
-            "https://threejs.org/examples/models/gltf/Soldier.glb",
-            "https://threejs.org/examples/models/gltf/RobotExpressive/RobotExpressive.glb",
+            "https://raw.githubusercontent.com/mrdoob/three.js/master/examples/models/gltf/Soldier.glb",
+            "https://raw.githubusercontent.com/mrdoob/three.js/master/examples/models/gltf/RobotExpressive/RobotExpressive.glb",
         ]
 
         glb_bytes = None
@@ -62,7 +62,10 @@ class AvatarGenerationService:
             try:
                 if on_progress:
                     on_progress(30, "Downloading avatar model...")
-                response = httpx.get(url, follow_redirects=True, timeout=60.0)
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                }
+                response = httpx.get(url, follow_redirects=True, timeout=60.0, headers=headers)
                 response.raise_for_status()
                 glb_bytes = response.content
                 break
@@ -162,7 +165,7 @@ class AvatarGenerationService:
         self, *, session_id, person_image_path, back_image_path=None, on_progress=None
     ):
         """Call local PIFuHD Flask server (pifuhd_server.py) running on this machine."""
-        local_url = getattr(self._settings, "local_inference_url", "http://localhost:8090")
+        local_url = getattr(self._settings, "local_inference_url", "http://127.0.0.1:8090")
 
         if on_progress:
             on_progress(10, "Uploading photo to local PIFuHD server...")

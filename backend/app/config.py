@@ -70,7 +70,7 @@ class Settings(BaseSettings):
     runpod_api_key: str | None = Field(default=None, alias="RUNPOD_API_KEY")
     runpod_endpoint_id: str | None = Field(default=None, alias="RUNPOD_ENDPOINT_ID")
     local_inference_url: str = Field(
-        default="http://localhost:8090",
+        default="http://127.0.0.1:8090",
         alias="LOCAL_INFERENCE_URL",
     )
     # AI stylist (chat + product search)

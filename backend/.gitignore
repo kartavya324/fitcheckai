@@ -23,3 +23,8 @@ storage/avatars/
 *.glb
 last_error.log
 test_person.jpg
+
+# PIFuHD is cloned by setup_local_gpu.sh / run_windows.bat (third-party code
+# + ~1.5GB weights) — never commit it.
+pifuhd/
+assets/haarcascade_frontalface_default.xml
