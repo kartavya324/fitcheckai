@@ -32,6 +32,7 @@ def _model_to_job(model: JobModel) -> Job:
         garment_upload_id=model.garment_upload_id,
         garment_category=model.garment_category,
         job_type=model.job_type or "tryon",
+        user_id=getattr(model, "user_id", None),
         person_path=model.person_path,
         garment_path=model.garment_path,
         result_path=model.result_path,
@@ -57,6 +58,7 @@ def _job_to_model(job: Job) -> JobModel:
         garment_upload_id=job.garment_upload_id,
         garment_category=job.garment_category,
         job_type=job.job_type,
+        user_id=job.user_id,
         person_path=job.person_path,
         garment_path=job.garment_path,
         result_path=job.result_path,
@@ -175,6 +177,39 @@ class JobRepository:
             total = db.query(JobModel).count()
             models = db.query(JobModel).order_by(JobModel.created_at.desc()).offset(offset).limit(limit).all()
             return [_model_to_job(m) for m in models], total
+
+    def reap_stale(self, older_than_minutes: int = 15) -> int:
+        """Fail jobs left in-flight by a crashed/restarted process.
+
+        A job stuck QUEUED/PROCESSING with no update for `older_than_minutes`
+        is orphaned (a live job writes progress far more often — even PIFuHD's
+        slowest leg is ~7 min), so mark it FAILED with a clear message instead
+        of leaving the user watching 'processing' forever. Returns count reaped.
+        """
+        from datetime import datetime, timedelta
+
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=older_than_minutes)
+        with SessionLocal() as db:
+            stale = (
+                db.query(JobModel)
+                .filter(
+                    JobModel.status.in_([JobStatus.QUEUED, JobStatus.PROCESSING]),
+                    JobModel.updated_at < cutoff,
+                )
+                .all()
+            )
+            for m in stale:
+                m.status = JobStatus.FAILED.value
+                m.error_json = {
+                    "code": "INTERRUPTED",
+                    "message": "This job was interrupted by a server restart. Please try again.",
+                }
+                m.stage = None
+                m.updated_at = datetime.now(timezone.utc)
+            db.commit()
+            if stale:
+                logger.warning("Reaped %d orphaned job(s) on startup", len(stale))
+            return len(stale)
 
     def is_reachable(self) -> bool:
         """Readiness check: DB is usable."""

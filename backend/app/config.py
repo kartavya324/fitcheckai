@@ -22,7 +22,27 @@ class Settings(BaseSettings):
 
     app_name: str = Field(default="fitcheck-api", alias="APP_NAME")
     app_version: str = Field(default="0.1.0", alias="APP_VERSION")
+    # "development" | "production" — gates prod-only safety (secret enforcement,
+    # HSTS). Set ENVIRONMENT=production on real deploys.
+    environment: str = Field(default="development", alias="ENVIRONMENT")
     storage_root: Path = Field(default=Path("./storage"), alias="STORAGE_ROOT")
+
+    # Database. When unset, we derive a local SQLite file under storage_root
+    # (dev default). In production set DATABASE_URL to a Postgres DSN, e.g.
+    # postgresql+psycopg://user:pass@host:5432/fitcheck
+    database_url: str | None = Field(default=None, alias="DATABASE_URL")
+
+    # Object storage. "local" = disk under storage_root served via /files
+    # (dev default). "s3" = S3/R2/any S3-compatible bucket (prod). When s3,
+    # set the bucket + credentials; s3_endpoint_url is for R2/MinIO, and
+    # s3_public_base_url is the public/CDN base for building object URLs.
+    storage_backend: str = Field(default="local", alias="STORAGE_BACKEND")
+    s3_bucket: str | None = Field(default=None, alias="S3_BUCKET")
+    s3_region: str | None = Field(default=None, alias="S3_REGION")
+    s3_endpoint_url: str | None = Field(default=None, alias="S3_ENDPOINT_URL")
+    s3_public_base_url: str | None = Field(default=None, alias="S3_PUBLIC_BASE_URL")
+    s3_access_key_id: str | None = Field(default=None, alias="S3_ACCESS_KEY_ID")
+    s3_secret_access_key: str | None = Field(default=None, alias="S3_SECRET_ACCESS_KEY")
 
     @field_validator("storage_root", mode="after")
     @classmethod
@@ -45,7 +65,7 @@ class Settings(BaseSettings):
         ],
         alias="CORS_ORIGINS",
     )
-    generation_stub: bool = Field(default=True, alias="GENERATION_STUB")
+    generation_stub: bool = Field(default=False, alias="GENERATION_STUB")
     job_simulation_seconds: float = Field(default=5.0, alias="JOB_SIMULATION_SECONDS")
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = Field(
         default="INFO",
@@ -66,18 +86,34 @@ class Settings(BaseSettings):
         default="replicate_2d",
         alias="GENERATION_MODE",
     )
-    avatar_mode: str = Field(default="stub", alias="AVATAR_MODE")
+    avatar_mode: str = Field(default="local_pifuhd", alias="AVATAR_MODE")
     runpod_api_key: str | None = Field(default=None, alias="RUNPOD_API_KEY")
     runpod_endpoint_id: str | None = Field(default=None, alias="RUNPOD_ENDPOINT_ID")
     local_inference_url: str = Field(
         default="http://127.0.0.1:8090",
         alias="LOCAL_INFERENCE_URL",
     )
+    # Auth / JWT. In production set JWT_SECRET to a long random string; the
+    # dev default is fine locally but MUST be overridden before launch.
+    jwt_secret: str = Field(
+        default="dev-insecure-change-me-in-production",
+        alias="JWT_SECRET",
+    )
+    jwt_algorithm: str = Field(default="HS256", alias="JWT_ALGORITHM")
+    access_token_expire_minutes: int = Field(
+        default=60 * 24 * 30,  # 30 days
+        alias="ACCESS_TOKEN_EXPIRE_MINUTES",
+    )
+
     # AI stylist (chat + product search)
     anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
     serpapi_key: str | None = Field(default=None, alias="SERPAPI_KEY")
     shopping_locale: str = Field(default="in", alias="SHOPPING_LOCALE")
     shopping_currency: str = Field(default="₹", alias="SHOPPING_CURRENCY")
+
+    @property
+    def is_production(self) -> bool:
+        return self.environment.lower() in ("production", "prod")
 
     @field_validator("cors_origins", mode="before")
     @classmethod

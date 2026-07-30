@@ -1,7 +1,25 @@
 Traceback (most recent call last):
-  File "C:\Users\karta\Desktop\Projects\fitcheckai\backend\pifuhd_server.py", line 680, in generate
+  File "C:\Users\karta\Desktop\Projects\fitcheckai\backend\pifuhd_server.py", line 843, in generate
     obj_path = run_pifuhd(img_path, tmp)
                ^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\karta\Desktop\Projects\fitcheckai\backend\pifuhd_server.py", line 288, in run_pifuhd
-    raise RuntimeError("PIFuHD exited 0 but produced no .obj file")
-RuntimeError: PIFuHD exited 0 but produced no .obj file
+  File "C:\Users\karta\Desktop\Projects\fitcheckai\backend\pifuhd_server.py", line 361, in run_pifuhd
+    raise RuntimeError(
+RuntimeError: PIFuHD produced no .obj at any resolution (256).
+STDOUT: Resuming from  ./checkpoints/pifuhd.pt
+Warning: opt is overwritten.
+test data size:  1
+initialize network with normal
+initialize network with normal
+generate mesh (test) ...
+C:\Users\karta\AppData\Local\Temp\tmp1pp89ra4\result/pifuhd_final/recon/result_person_256.obj
+CUDA error: out of memory
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+For debugging consider passing CUDA_LAUNCH_BLOCKING=1.
+Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+
+
+STDERR: 
+  0%|          | 0/1 [00:00<?, ?it/s]
+100%|##########| 1/1 [01:16<00:00, 76.38s/it]
+100%|##########| 1/1 [01:16<00:00, 76.39s/it]
+

@@ -16,6 +16,7 @@ import { Route as SizeRouteImport } from './routes/size'
 import { Route as SitemapDotxmlRouteImport } from './routes/sitemap[.]xml'
 import { Route as ResultsRouteImport } from './routes/results'
 import { Route as ProcessingRouteImport } from './routes/processing'
+import { Route as LoginRouteImport } from './routes/login'
 import { Route as HistoryRouteImport } from './routes/history'
 import { Route as FeedRouteImport } from './routes/feed'
 import { Route as ColorsRouteImport } from './routes/colors'
@@ -57,6 +58,11 @@ const ProcessingRoute = ProcessingRouteImport.update({
   path: '/processing',
   getParentRoute: () => rootRouteImport,
 } as any)
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const HistoryRoute = HistoryRouteImport.update({
   id: '/history',
   path: '/history',
@@ -89,6 +95,7 @@ export interface FileRoutesByFullPath {
   '/colors': typeof ColorsRoute
   '/feed': typeof FeedRoute
   '/history': typeof HistoryRoute
+  '/login': typeof LoginRoute
   '/processing': typeof ProcessingRoute
   '/results': typeof ResultsRoute
   '/sitemap.xml': typeof SitemapDotxmlRoute
@@ -103,6 +110,7 @@ export interface FileRoutesByTo {
   '/colors': typeof ColorsRoute
   '/feed': typeof FeedRoute
   '/history': typeof HistoryRoute
+  '/login': typeof LoginRoute
   '/processing': typeof ProcessingRoute
   '/results': typeof ResultsRoute
   '/sitemap.xml': typeof SitemapDotxmlRoute
@@ -118,6 +126,7 @@ export interface FileRoutesById {
   '/colors': typeof ColorsRoute
   '/feed': typeof FeedRoute
   '/history': typeof HistoryRoute
+  '/login': typeof LoginRoute
   '/processing': typeof ProcessingRoute
   '/results': typeof ResultsRoute
   '/sitemap.xml': typeof SitemapDotxmlRoute
@@ -134,6 +143,7 @@ export interface FileRouteTypes {
     | '/colors'
     | '/feed'
     | '/history'
+    | '/login'
     | '/processing'
     | '/results'
     | '/sitemap.xml'
@@ -148,6 +158,7 @@ export interface FileRouteTypes {
     | '/colors'
     | '/feed'
     | '/history'
+    | '/login'
     | '/processing'
     | '/results'
     | '/sitemap.xml'
@@ -162,6 +173,7 @@ export interface FileRouteTypes {
     | '/colors'
     | '/feed'
     | '/history'
+    | '/login'
     | '/processing'
     | '/results'
     | '/sitemap.xml'
@@ -177,6 +189,7 @@ export interface RootRouteChildren {
   ColorsRoute: typeof ColorsRoute
   FeedRoute: typeof FeedRoute
   HistoryRoute: typeof HistoryRoute
+  LoginRoute: typeof LoginRoute
   ProcessingRoute: typeof ProcessingRoute
   ResultsRoute: typeof ResultsRoute
   SitemapDotxmlRoute: typeof SitemapDotxmlRoute
@@ -237,6 +250,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProcessingRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/history': {
       id: '/history'
       path: '/history'
@@ -281,6 +301,7 @@ const rootRouteChildren: RootRouteChildren = {
   ColorsRoute: ColorsRoute,
   FeedRoute: FeedRoute,
   HistoryRoute: HistoryRoute,
+  LoginRoute: LoginRoute,
   ProcessingRoute: ProcessingRoute,
   ResultsRoute: ResultsRoute,
   SitemapDotxmlRoute: SitemapDotxmlRoute,

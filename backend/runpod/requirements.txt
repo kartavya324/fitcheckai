@@ -1,0 +1,14 @@
+# RunPod serverless deps for the PIFuHD avatar pipeline.
+# torch / torchvision are provided by the runpod/pytorch base image — do NOT
+# add them here or you risk a CUDA-version mismatch.
+runpod
+numpy
+Pillow
+pillow-heif
+opencv-python-headless
+scikit-image
+trimesh
+scipy
+fast-simplification
+rembg
+onnxruntime

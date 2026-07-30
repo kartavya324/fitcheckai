@@ -13,3 +13,12 @@ pillow>=10.0.0
 fast-simplification
 anthropic>=0.40.0
 
+PyJWT
+bcrypt
+email-validator
+# Postgres driver (production; dev uses SQLite)
+psycopg[binary]
+alembic
+pillow-heif
+boto3  # S3/R2 object storage (prod only; lazily imported)
+slowapi  # rate limiting

@@ -217,6 +217,13 @@ class GenerationService:
                     # result is (output_image_path, masked_image_path)
                     result_image_path = result[0] if isinstance(result, (list, tuple)) else result
 
+                    # Validate: a real IDM-VTON try-on is the person re-dressed,
+                    # so it is always a ~3:4 PORTRAIT at the person's aspect.
+                    # The free Space intermittently hands back unrelated example
+                    # images (landscapes/stock photos) on GPU errors — reject
+                    # those so the job fails honestly instead of showing garbage.
+                    self._validate_tryon_output(result_image_path, person_path)
+
                     if on_progress:
                         on_progress(85, "Saving result...")
 
@@ -248,6 +255,57 @@ class GenerationService:
                     os.unlink(path)
                 except OSError:
                     pass
+
+    def _validate_tryon_output(self, result_path: str, person_path: str) -> None:
+        """Raise if the Space returned something that isn't a real try-on.
+
+        IDM-VTON preserves the person's pose/framing and outputs a portrait
+        image whose aspect ratio matches the (cropped) person input. Unrelated
+        example images the broken Space sometimes returns fail these checks.
+        """
+        from PIL import Image
+
+        try:
+            with Image.open(result_path) as im:
+                im.verify()  # detects truncated/garbage files
+            with Image.open(result_path) as im:
+                rw, rh = im.size
+        except Exception as e:
+            raise ValueError(f"Try-on output is not a valid image: {e}")
+
+        if rw < 128 or rh < 128:
+            raise ValueError(f"Try-on output too small ({rw}x{rh})")
+
+        # Content check: a genuine try-on keeps the person — including their
+        # FACE — since only the garment changes. The broken free Space instead
+        # hands back unrelated example/stock photos (night sky, a TV in sand,
+        # a desert road) which contain no face. Every try-on input is a photo
+        # of a person, so a valid output MUST show a face; no face → garbage.
+        #
+        # This is FAIL-CLOSED on purpose: if face detection can't run, we
+        # reject rather than let an unvalidated image through. Showing a
+        # "Generation Failed" card is strictly better than showing a random
+        # stock photo as the user's try-on.
+        import cv2
+        from app.core.logging import get_logger
+
+        cascade = cv2.CascadeClassifier(
+            cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+        )
+        img = cv2.imread(result_path)
+        n_faces = 0
+        if img is not None and not cascade.empty():
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            n_faces = len(cascade.detectMultiScale(gray, 1.1, 5, minSize=(30, 30)))
+
+        get_logger(__name__).info(
+            "Try-on output validation: %sx%s, faces=%s", rw, rh, n_faces
+        )
+        if n_faces == 0:
+            raise ValueError(
+                "Try-on output has no detectable face; the Space returned "
+                "an unrelated image instead of a try-on"
+            )
 
     def _wake_space(self) -> None:
         """Hit the Space URL to wake it from HF free-tier sleep."""

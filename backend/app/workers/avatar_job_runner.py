@@ -8,12 +8,16 @@ from app.models.job import Job, JobError, JobStatus
 
 logger = logging.getLogger(__name__)
 
-# In-memory progress store keyed by job_id
+# In-memory progress overlay keyed by job_id — a fast path for the process
+# actually running the job. It is NOT the source of truth: every tick is also
+# written to the DB (job.progress/stage), which is what status reads. Returns
+# None when this process isn't running the job, so status falls back to the DB
+# instead of a bogus 0/"Queued" default (the old 'stuck at Queued' bug).
 _avatar_progress: dict[str, dict] = {}
 
 
-def get_avatar_progress(job_id: str) -> dict:
-    return _avatar_progress.get(job_id, {"pct": 0, "stage": "Queued"})
+def get_avatar_progress(job_id: str) -> dict | None:
+    return _avatar_progress.get(job_id)
 
 
 class AvatarJobRunner:

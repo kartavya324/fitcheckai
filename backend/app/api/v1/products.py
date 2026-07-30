@@ -4,8 +4,10 @@ from urllib.parse import urlparse
 
 import httpx
 from bs4 import BeautifulSoup
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, Request
 from pydantic import BaseModel, HttpUrl
+
+from app.core.rate_limit import limiter, EXPENSIVE_LIMIT
 
 from app.api.deps import UploadServiceDep
 from app.core.exceptions import AppError
@@ -188,7 +190,9 @@ def get_largest_image(soup: BeautifulSoup, html: str = "") -> str | None:
     response_model=UploadCreatedResponse,
     status_code=status.HTTP_201_CREATED,
 )
+@limiter.limit(EXPENSIVE_LIMIT)
 async def fetch_product_image(
+    request: Request,
     body: ProductFetchRequest,
     upload_service: UploadServiceDep,
     storage_service: StorageServiceDep,

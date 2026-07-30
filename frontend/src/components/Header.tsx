@@ -1,11 +1,13 @@
 import { Link } from "@tanstack/react-router";
 import { useState, useEffect } from "react";
-import { Menu, X, Sun, Moon } from "lucide-react";
+import { Menu, X, Sun, Moon, LogOut, User } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useAuth } from "@/lib/useAuth";
 
 export function Header() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [dark, setDark] = useState(false);
+  const { user, logout } = useAuth();
 
   useEffect(() => {
     if (dark) {
@@ -59,8 +61,25 @@ export function Header() {
           >
             {dark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
           </Button>
+          {user ? (
+            <div className="ml-2 flex items-center gap-2">
+              <span className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                <User className="h-4 w-4" />
+                {user.display_name || user.email.split("@")[0]}
+              </span>
+              <Button variant="ghost" size="icon" onClick={logout} title="Log out">
+                <LogOut className="h-4 w-4" />
+              </Button>
+            </div>
+          ) : (
+            <Link to="/login">
+              <Button variant="ghost" className="ml-2">
+                Sign in
+              </Button>
+            </Link>
+          )}
           <Link to="/try-on">
-            <Button className="ml-4 bg-foreground text-background hover:bg-foreground/90">
+            <Button className="ml-2 bg-foreground text-background hover:bg-foreground/90">
               Try It Now
             </Button>
           </Link>
@@ -93,6 +112,27 @@ export function Header() {
                 {link.label}
               </Link>
             ))}
+            {user ? (
+              <button
+                type="button"
+                onClick={() => {
+                  logout();
+                  setMobileOpen(false);
+                }}
+                className="flex items-center gap-2 rounded-md px-3 py-2 text-left text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+              >
+                <LogOut className="h-4 w-4" />
+                Log out ({user.display_name || user.email.split("@")[0]})
+              </button>
+            ) : (
+              <Link
+                to="/login"
+                onClick={() => setMobileOpen(false)}
+                className="rounded-md px-3 py-2 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+              >
+                Sign in
+              </Link>
+            )}
             <Link to="/try-on" onClick={() => setMobileOpen(false)}>
               <Button className="mt-2 w-full bg-foreground text-background hover:bg-foreground/90">
                 Try It Now

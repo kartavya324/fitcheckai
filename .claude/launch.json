@@ -2,6 +2,12 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "finmin",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["C:/Users/karta/Desktop/Projects/finmin/frontend/node_modules/vite/bin/vite.js", "C:/Users/karta/Desktop/Projects/finmin/frontend", "--port", "5173", "--host"],
+      "port": 5173
+    },
+    {
       "name": "frontend",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev", "--prefix", "frontend"],

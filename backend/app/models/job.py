@@ -43,6 +43,7 @@ class Job:
     garment_upload_id: str | None
     garment_category: str
     job_type: str = "tryon"
+    user_id: str | None = None
     person_path: str | None = None
     garment_path: str | None = None
     result_path: str | None = None

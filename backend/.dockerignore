@@ -1,0 +1,16 @@
+# Keep the RunPod build context small — the image re-downloads weights and
+# installs its own deps, so none of this local state should ship.
+venv/
+storage/
+__pycache__/
+**/__pycache__/
+*.pyc
+.env
+last_error.log
+tests/
+test_*.py
+*.glb
+pifuhd/checkpoints/
+pifuhd/results/
+pifuhd/venv/
+.git/

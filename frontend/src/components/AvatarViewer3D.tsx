@@ -2,7 +2,7 @@ import { useRef, useEffect, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-import { Loader2, Pause, RotateCw } from "lucide-react";
+import { Loader2, Pause, RotateCw, ImageOff } from "lucide-react";
 
 interface AvatarViewer3DProps {
   glbUrl: string;
@@ -162,9 +162,20 @@ export function AvatarViewer3D({
           }
         })
 
+        // Guard: a real avatar is a PIFuHD reconstruction and always carries
+        // COLOR_0 vertex colors. Anything without them (a stray stub/soldier
+        // GLB, a wrong file) is NOT a valid avatar — refuse to render it and
+        // surface a failure instead of showing a random 3D model.
+        if (!isPifuhdAvatar) {
+          console.error('GLB is not a valid avatar (no vertex colors)')
+          setError('Failed to load avatar')
+          setLoading(false)
+          return
+        }
+
         // PIFuHD exports face -Z while the camera sits at +Z; turn the
         // avatar so users greet its front, not its back.
-        if (isPifuhdAvatar) model.rotation.y = Math.PI
+        model.rotation.y = Math.PI
 
         scene.add(model)
         setLoading(false)
@@ -260,10 +271,16 @@ export function AvatarViewer3D({
 
       {error && (
         <div
-          className="absolute inset-0 flex items-center justify-center rounded-2xl bg-background"
+          className="absolute inset-0 flex items-center justify-center rounded-2xl border border-border bg-muted/30"
           style={{ height }}
         >
-          <p className="text-sm text-destructive">{error}</p>
+          <div className="flex flex-col items-center gap-2 px-6 text-center">
+            <ImageOff className="h-8 w-8 text-muted-foreground" />
+            <p className="text-sm font-medium text-foreground">{error}</p>
+            <p className="text-xs text-muted-foreground">
+              Try regenerating your avatar.
+            </p>
+          </div>
         </div>
       )}
     </div>

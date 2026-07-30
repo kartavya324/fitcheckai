@@ -257,6 +257,12 @@ def _default_resolution() -> str:
                 return "512"
             if vram_gb >= 8:
                 return "384"
+            # 4GB cards (RTX 3050): 256 is the RELIABLE default. 384 fits only
+            # when the GPU is otherwise idle and OOMs under real conditions —
+            # and a failed 384 attempt then starves the 256 fallback too. Face
+            # sharpness comes from the 2048px TEXTURE (CPU, no VRAM), so 256
+            # geometry + hi-res texture is the right trade on this card.
+            # Force 384 with PIFUHD_RESOLUTION=384 only when the GPU is clear.
             return "256"
     except Exception:
         pass
@@ -300,6 +306,9 @@ def run_pifuhd(image_path: str, output_dir: str) -> str:
 
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = "0"
+    # max_split_size_mb:256 is the known-good value on this 4GB card. Do NOT
+    # lower it (128 caused allocator OOMs even at 256³) and do NOT add
+    # expandable_segments (unsupported on Windows).
     env["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:256"
 
     last_output = ""
@@ -345,6 +354,10 @@ def run_pifuhd(image_path: str, output_dir: str) -> str:
         print(f"No mesh at resolution {resolution} "
               f"(likely GPU memory); trying coarser grid...", flush=True)
         print(last_output, flush=True)
+        # Let the driver reclaim VRAM from the OOM'd subprocess before the
+        # next attempt, or the fallback grid OOMs into a still-occupied GPU.
+        import time as _time
+        _time.sleep(4)
 
     raise RuntimeError(
         f"PIFuHD produced no .obj at any resolution "
@@ -593,7 +606,9 @@ def recolor_mesh_from_image(mesh, image_path: str, rect: list, back_image_path: 
             for _ in range(3):
                 smoothed = smoothed * 0.5 + op.dot(smoothed) * 0.5
             # Smooth the back strongly, the front barely (preserves the face).
-            w = np.where(front_facing, 0.12, 0.75)[:, None]
+            # Barely smooth the front (0.06) so the hi-res face texture stays
+            # crisp; smooth the synthesized back hard (0.75) to hide seams.
+            w = np.where(front_facing, 0.06, 0.75)[:, None]
             colors = colors * (1 - w) + smoothed * w
         except Exception as exc:
             print(f"  Colour seam-blend skipped: {exc}")
@@ -658,7 +673,7 @@ def convert_to_glb(
     # Quadric decimation: adaptive, so flat regions collapse while curved
     # detail (face, hands) keeps its density. Halves GLB size → faster loads.
     try:
-        target_faces = int(os.environ.get("AVATAR_TARGET_FACES", "80000"))
+        target_faces = int(os.environ.get("AVATAR_TARGET_FACES", "200000"))
         if len(mesh.faces) > target_faces:
             before = len(mesh.faces)
             decimated = mesh.simplify_quadric_decimation(face_count=target_faces)
@@ -830,21 +845,31 @@ def generate():
             print("[OK] Step 3/4: 3D mesh reconstructed", flush=True)
             print(f"PIFuHD done: {obj_path}", flush=True)
 
-            # Texture from the SAME 512 image PIFuHD was fed (person.jpg) so the
-            # calibrated projection lines up exactly. Read the person rect that
-            # prepare_input wrote for that alignment.
-            preprocessed_for_texture = os.path.join(tmp, "input", "person.jpg")
-            texture_source = (
-                preprocessed_for_texture
-                if Path(preprocessed_for_texture).exists()
-                else original_img_path
-            )
+            # Texture quality: PIFuHD is FED a 512px image (that's what the
+            # network wants), but the 512 crop only gives the face ~60px of
+            # colour → the blurry "144p" look. So for COLOUR we re-render the
+            # exact same person-filled crop at high resolution and project from
+            # that. prepare_input is deterministic, so the hi-res crop aligns
+            # with the mesh; we just pass a rect scaled to the hi-res canvas.
+            hires = int(os.environ.get("AVATAR_TEXTURE_RES", "2048"))
+            texture_source = os.path.join(tmp, "input", "person.jpg")  # fallback
             rect = None
             rect_file = Path(tmp) / "input" / "person_rect.txt"
             if rect_file.exists():
                 parts = rect_file.read_text().split()
                 if len(parts) >= 4:
                     rect = [int(float(p)) for p in parts[:4]]
+            try:
+                hires_path = os.path.join(tmp, "input", "person_hires.jpg")
+                prepare_input(original_img_path, hires_path, target=hires)
+                from PIL import Image as _Im
+                with _Im.open(hires_path) as _im:
+                    hw, hh = _im.size
+                texture_source = hires_path
+                rect = [0, 0, hw, hh]  # hi-res crop fills its own canvas
+                print(f"Texturing from hi-res crop {hw}x{hh}", flush=True)
+            except Exception as e:
+                print(f"Hi-res texture prep failed ({e}); using 512 crop", flush=True)
             glb_path = convert_to_glb(
                 obj_path, tmp, texture_source, rect, back_image_path=back_img_path
             )

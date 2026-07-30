@@ -11,8 +11,21 @@ from app.models.job import JobStatus
 
 Base = declarative_base()
 
+class UserModel(Base):
+    __tablename__ = "users"
+
+    id = Column(String, primary_key=True, index=True)
+    email = Column(String, nullable=False, unique=True, index=True)
+    hashed_password = Column(String, nullable=False)
+    display_name = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=True)
+
+
 class JobModel(Base):
     __tablename__ = "jobs"
+
+    # Owner (nullable during the accounts migration; new rows always set it)
+    user_id = Column(String, index=True, nullable=True)
 
     job_id = Column(String, primary_key=True, index=True)
     status = Column(SQLEnum(JobStatus), nullable=False)
@@ -42,6 +55,7 @@ class WardrobeItemModel(Base):
     __tablename__ = "wardrobe_items"
 
     id = Column(String, primary_key=True, index=True)
+    user_id = Column(String, index=True, nullable=True)
     name = Column(String, nullable=True)
     category = Column(String, nullable=False)  # tops|bottoms|footwear|outerwear|accessory
     color = Column(String, nullable=True)
@@ -54,6 +68,7 @@ class OutfitModel(Base):
     __tablename__ = "outfits"
 
     id = Column(String, primary_key=True, index=True)
+    user_id = Column(String, index=True, nullable=True)
     name = Column(String, nullable=True)
     item_ids = Column(JSON, default=list)  # ordered wardrobe item ids
     created_at = Column(DateTime(timezone=True), nullable=True)
@@ -96,14 +111,26 @@ class CommentModel(Base):
     created_at = Column(DateTime(timezone=True), nullable=True)
 
 
-def get_engine():
+def get_database_url() -> str:
+    """Resolve the DB URL: explicit DATABASE_URL (Postgres in prod), else a
+    local SQLite file under storage_root (dev default)."""
     settings = get_settings()
+    if settings.database_url:
+        return settings.database_url
     settings.storage_root.mkdir(parents=True, exist_ok=True)
     db_path = settings.storage_root / "fitcheck.db"
-    return create_engine(
-        f"sqlite:///{db_path}",
-        connect_args={"check_same_thread": False}
-    )
+    return f"sqlite:///{db_path}"
+
+
+def get_engine():
+    url = get_database_url()
+    # check_same_thread is a SQLite-only arg; passing it to Postgres errors.
+    connect_args = {"check_same_thread": False} if url.startswith("sqlite") else {}
+    # pool_pre_ping avoids stale-connection errors on managed Postgres.
+    kwargs = {"connect_args": connect_args}
+    if not url.startswith("sqlite"):
+        kwargs["pool_pre_ping"] = True
+    return create_engine(url, **kwargs)
 
 engine = get_engine()
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -114,3 +141,27 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+def ensure_schema() -> None:
+    """Lightweight forward-migration for SQLite: create_all() makes new tables
+    (e.g. `users`) but never ADDS columns to existing ones. This adds the
+    `user_id` ownership columns to pre-accounts tables if they're missing, so
+    existing dev databases keep working without a manual wipe. Phase 2 replaces
+    this with Alembic migrations."""
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    wanted = {
+        "jobs": "user_id",
+        "wardrobe_items": "user_id",
+        "outfits": "user_id",
+    }
+    with engine.begin() as conn:
+        existing_tables = set(inspector.get_table_names())
+        for table, column in wanted.items():
+            if table not in existing_tables:
+                continue
+            cols = {c["name"] for c in inspector.get_columns(table)}
+            if column not in cols:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} VARCHAR"))

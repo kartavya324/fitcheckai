@@ -30,135 +30,121 @@ class AvatarGenerationService:
             return self._generate_runpod(
                 session_id=session_id,
                 person_image_path=person_image_path,
-                on_progress=on_progress,
-            )
-        if self._settings.avatar_mode == "local_pifuhd":
-            return self._generate_local_pifuhd(
-                session_id=session_id,
-                person_image_path=person_image_path,
                 back_image_path=back_image_path,
                 on_progress=on_progress,
             )
-        return self._generate_stub(
+        # Everything else routes to the real local PIFuHD pipeline. There is
+        # deliberately NO stub fallback: serving a generic robot/soldier GLB
+        # when generation isn't configured produced a fake avatar that looked
+        # like a bug and confused every test. A misconfiguration must fail
+        # loudly, never silently ship a placeholder body.
+        return self._generate_local_pifuhd(
             session_id=session_id,
             person_image_path=person_image_path,
+            back_image_path=back_image_path,
             on_progress=on_progress,
         )
 
-    def _generate_stub(self, *, session_id, person_image_path, on_progress=None):
-        """Download a placeholder .glb for development/testing."""
-        if on_progress:
-            on_progress(10, "Initialising avatar pipeline...")
-
-        glb_urls = [
-            "https://raw.githubusercontent.com/mrdoob/three.js/master/examples/models/gltf/Soldier.glb",
-            "https://raw.githubusercontent.com/mrdoob/three.js/master/examples/models/gltf/RobotExpressive/RobotExpressive.glb",
-        ]
-
-        glb_bytes = None
-        last_error = None
-
-        for url in glb_urls:
-            try:
-                if on_progress:
-                    on_progress(30, "Downloading avatar model...")
-                headers = {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                }
-                response = httpx.get(url, follow_redirects=True, timeout=60.0, headers=headers)
-                response.raise_for_status()
-                glb_bytes = response.content
-                break
-            except Exception as e:
-                last_error = e
-                continue
-
-        if not glb_bytes:
-            raise AppError(
-                f"Failed to download stub avatar: {last_error}",
-                code="AVATAR_ERROR",
-                status_code=500,
-            )
-
-        if on_progress:
-            on_progress(70, "Processing avatar...")
-
-        result_path = self._save_avatar_glb(session_id, glb_bytes)
-
-        if on_progress:
-            on_progress(100, "Avatar ready!")
+    def _generate_stub_removed(self, *, session_id, person_image_path, on_progress=None):
+        """Deprecated. The placeholder-GLB path was removed on purpose — see
+        generate(). Kept only as a tombstone so nothing calls it by accident."""
+        raise AppError(
+            "Stub avatar generation has been removed. Set AVATAR_MODE=local_pifuhd "
+            "and run the local PIFuHD server.",
+            code="AVATAR_ERROR",
+            status_code=500,
+        )
 
         return result_path
 
-    def _generate_runpod(self, *, session_id, person_image_path, on_progress=None):
-        """Call RunPod serverless endpoint running ECON+TeCH pipeline."""
+    def _generate_runpod(
+        self, *, session_id, person_image_path, back_image_path=None, on_progress=None
+    ):
+        """Call a RunPod serverless endpoint running our PIFuHD handler
+        (backend/runpod/handler.py) on a cloud GPU. Uses async /run + polling
+        so multi-minute 512³ jobs don't hit the /runsync time limit.
+
+        The handler I/O matches _generate_local_pifuhd: it takes
+        {image_base64, back_image_base64?} and returns {glb_base64}.
+        """
+        import time
+
         if not self._settings.runpod_api_key:
-            raise AppError(
-                "RUNPOD_API_KEY not set",
-                code="CONFIG_ERROR",
-                status_code=500,
-            )
+            raise AppError("RUNPOD_API_KEY not set", code="CONFIG_ERROR", status_code=500)
         if not self._settings.runpod_endpoint_id:
-            raise AppError(
-                "RUNPOD_ENDPOINT_ID not set",
-                code="CONFIG_ERROR",
-                status_code=500,
-            )
+            raise AppError("RUNPOD_ENDPOINT_ID not set", code="CONFIG_ERROR", status_code=500)
 
         if on_progress:
-            on_progress(10, "Uploading photo to GPU server...")
+            on_progress(10, "Uploading photo to cloud GPU...")
 
-        image_b64 = base64.b64encode(
-            open(person_image_path, "rb").read()
-        ).decode()
-
-        if on_progress:
-            on_progress(25, "Reconstructing 3D body mesh...")
-
-        url = f"https://api.runpod.ai/v2/{self._settings.runpod_endpoint_id}/runsync"
-        headers = {"Authorization": f"Bearer {self._settings.runpod_api_key}"}
-        payload = {
-            "input": {
-                "image_base64": image_b64,
-                "pipeline": "econ_tech",
-                "output_format": "glb",
-            }
+        payload_input = {
+            "image_base64": base64.b64encode(
+                open(person_image_path, "rb").read()
+            ).decode()
         }
+        if back_image_path:
+            payload_input["back_image_base64"] = base64.b64encode(
+                open(back_image_path, "rb").read()
+            ).decode()
 
+        base = f"https://api.runpod.ai/v2/{self._settings.runpod_endpoint_id}"
+        headers = {"Authorization": f"Bearer {self._settings.runpod_api_key}"}
+
+        # Submit the job (async — returns an id immediately)
         try:
-            response = httpx.post(
-                url, json=payload, headers=headers, timeout=300.0
+            run = httpx.post(
+                f"{base}/run", json={"input": payload_input},
+                headers=headers, timeout=60.0,
             )
-            response.raise_for_status()
+            run.raise_for_status()
+            job_id = run.json()["id"]
         except Exception as e:
-            raise AppError(
-                f"RunPod API error: {e}",
-                code="RUNPOD_ERROR",
-                status_code=500,
-            ) from e
+            raise AppError(f"RunPod submit failed: {e}", code="RUNPOD_ERROR", status_code=500) from e
 
         if on_progress:
-            on_progress(80, "Baking texture onto mesh...")
+            on_progress(25, "Reconstructing 3D body mesh on cloud GPU...")
 
-        result = response.json()
+        # Poll status until COMPLETED/FAILED (cap ~10 min)
+        deadline = time.time() + 600
+        result = None
+        while time.time() < deadline:
+            try:
+                st = httpx.get(f"{base}/status/{job_id}", headers=headers, timeout=30.0)
+                st.raise_for_status()
+                body = st.json()
+            except Exception as e:
+                raise AppError(f"RunPod status failed: {e}", code="RUNPOD_ERROR", status_code=500) from e
+
+            status = body.get("status")
+            if status == "COMPLETED":
+                result = body.get("output") or {}
+                break
+            if status in ("FAILED", "CANCELLED", "TIMED_OUT"):
+                raise AppError(
+                    f"RunPod job {status}: {body.get('error', '')}",
+                    code="RUNPOD_ERROR", status_code=500,
+                )
+            time.sleep(3)
+
+        if result is None:
+            raise AppError("RunPod job timed out", code="RUNPOD_ERROR", status_code=500)
+        if "error" in result:
+            raise AppError(
+                f"Cloud PIFuHD failed: {result['error']}",
+                code="RUNPOD_ERROR", status_code=500,
+            )
+
+        if on_progress:
+            on_progress(90, "Saving avatar...")
+
         try:
-            glb_b64 = result["output"]["glb_base64"]
-            glb_bytes = base64.b64decode(glb_b64)
+            glb_bytes = base64.b64decode(result["glb_base64"])
         except Exception as e:
-            raise AppError(
-                f"Invalid RunPod response: {e}",
-                code="RUNPOD_ERROR",
-                status_code=500,
-            ) from e
-
-        if on_progress:
-            on_progress(95, "Saving avatar...")
+            raise AppError(f"Invalid RunPod response: {e}", code="RUNPOD_ERROR", status_code=500) from e
 
         result_path = self._save_avatar_glb(session_id, glb_bytes)
-
         if on_progress:
             on_progress(100, "Avatar ready!")
-
         return result_path
 
     def _generate_local_pifuhd(
@@ -281,16 +267,13 @@ class AvatarGenerationService:
             )
 
         glb_bytes = base64.b64decode(result["glb_base64"])
-        avatar_dir = self._settings.storage_root / "avatars"
-        avatar_dir.mkdir(parents=True, exist_ok=True)
-        out_path = avatar_dir / f"{output_name}.glb"
-        out_path.write_bytes(glb_bytes)
-        return str(out_path.relative_to(self._settings.storage_root))
+        return self._save_avatar_glb(output_name, glb_bytes)
 
-    def _save_avatar_glb(self, session_id: str, glb_bytes: bytes) -> str:
-        """Save .glb bytes and return relative path."""
-        avatar_dir = self._settings.storage_root / "avatars"
-        avatar_dir.mkdir(parents=True, exist_ok=True)
-        avatar_path = avatar_dir / f"{session_id}.glb"
-        avatar_path.write_bytes(glb_bytes)
-        return str(avatar_path.relative_to(self._settings.storage_root))
+    def _save_avatar_glb(self, name: str, glb_bytes: bytes) -> str:
+        """Persist .glb via the storage backend; return its storage key.
+        Key doubles as the value stored on the job (job.result_path) and is
+        turned into a URL later via the same backend."""
+        from app.services.storage_backend import get_storage_backend, content_type_for
+        key = f"avatars/{name}.glb"
+        get_storage_backend().save(key, glb_bytes, content_type_for(key))
+        return key

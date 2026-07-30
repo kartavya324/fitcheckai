@@ -1,7 +1,9 @@
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Request
 import uuid
 import asyncio
 from datetime import datetime, UTC
+
+from app.core.rate_limit import limiter, EXPENSIVE_LIMIT
 
 from app.services.avatar_generation_service import AvatarGenerationService
 from app.services.generation_service import GenerationService
@@ -10,12 +12,16 @@ from app.repositories.job_repository import JobRepository
 from app.workers.avatar_job_runner import AvatarJobRunner, get_avatar_progress
 from app.models.job import Job, JobStatus
 from app.config import get_settings
+from app.api.deps import OptionalUserDep
 
 router = APIRouter(prefix="/avatar", tags=["avatar"])
 
 
 @router.post("/create", status_code=202)
+@limiter.limit(EXPENSIVE_LIMIT)
 async def create_avatar(
+    request: Request,
+    current_user: OptionalUserDep,
     person_image: UploadFile = File(...),
     back_image: UploadFile = File(None),
 ):
@@ -72,6 +78,7 @@ async def create_avatar(
         job_type="avatar",
         person_path=str(image_path.relative_to(settings.storage_root)),
         stage="Queued",
+        user_id=current_user.id if current_user else None,
         created_at=now,
         updated_at=now,
     )
@@ -99,7 +106,10 @@ async def create_avatar(
 
 
 @router.post("/tryon", status_code=202)
+@limiter.limit(EXPENSIVE_LIMIT)
 async def avatar_tryon(
+    request: Request,
+    current_user: OptionalUserDep,
     session_id: str = Form(...),
     garment_image: UploadFile = File(...),
     garment_category: str = Form("upper_body"),
@@ -152,6 +162,7 @@ async def avatar_tryon(
         person_path=str(person_photo.relative_to(settings.storage_root)),
         garment_path=str(garment_path.relative_to(settings.storage_root)),
         stage="Queued",
+        user_id=current_user.id if current_user else None,
         created_at=now,
         updated_at=now,
     )
@@ -182,7 +193,7 @@ async def avatar_tryon(
 
 
 @router.get("/status/{job_id}")
-def get_avatar_status(job_id: str):
+def get_avatar_status(job_id: str, current_user: OptionalUserDep = None):
     """Poll avatar generation status."""
     settings = get_settings()
     job_repo = JobRepository(settings)
@@ -191,12 +202,31 @@ def get_avatar_status(job_id: str):
     if not job:
         raise HTTPException(404, "Job not found")
 
-    progress = get_avatar_progress(job_id)
+    # Ownership: an owned job is only visible to its owner. (Anonymous jobs
+    # created before accounts have user_id=None and stay publicly pollable
+    # until the required-auth flip.) 404 (not 403) avoids leaking existence.
+    if job.user_id and (current_user is None or current_user.id != job.user_id):
+        raise HTTPException(404, "Job not found")
+
+    from app.services.storage_backend import get_storage_backend
+    storage = get_storage_backend()
+    # Keys may carry legacy Windows backslashes; normalize to forward slashes
+    # so both disk (StaticFiles) and S3 resolve them.
+    def _u(key: str) -> str:
+        return storage.url(str(key).replace("\\", "/"))
+
+    # DB is the source of truth for progress; the in-memory overlay is only a
+    # live fast-path for the process running the job. This prevents a status
+    # poll landing on another process (or after a restart) from reporting a
+    # stale 0/"Queued".
+    live = get_avatar_progress(job_id)
+    live_pct = live["pct"] if live else (job.progress or 0)
+    live_stage = live["stage"] if live else (job.stage or "")
     avatar_url = None
     analysis = None
 
     if job.status == JobStatus.COMPLETED and job.result_path:
-        avatar_url = f"{settings.public_base_url}/files/{job.result_path}"
+        avatar_url = _u(job.result_path)
 
     error = None
     if job.status == JobStatus.FAILED and job.error:
@@ -207,7 +237,7 @@ def get_avatar_status(job_id: str):
         raw_analysis = job.metadata["analysis"]
         face_url = None
         if raw_analysis.get("face_thumbnail_path"):
-            face_url = f"{settings.public_base_url}/files/{raw_analysis['face_thumbnail_path']}"
+            face_url = _u(raw_analysis["face_thumbnail_path"])
         analysis = {
             "dominant_colors": raw_analysis.get("dominant_colors", []),
             "face_thumbnail_url": face_url,
@@ -216,15 +246,13 @@ def get_avatar_status(job_id: str):
     # Avatar try-on jobs also carry the intermediate 2D dressed photo
     tryon_image_url = None
     if job.metadata and job.metadata.get("tryon_image_path"):
-        tryon_image_url = (
-            f"{settings.public_base_url}/files/{job.metadata['tryon_image_path']}"
-        )
+        tryon_image_url = _u(job.metadata["tryon_image_path"])
 
     return {
         "job_id": job_id,
         "status": job.status.value,
-        "progress": progress.get("pct", job.progress or 0),
-        "stage": progress.get("stage", job.stage or ""),
+        "progress": live_pct,
+        "stage": live_stage,
         "avatar_url": avatar_url,
         "analysis": analysis,
         "tryon_image_url": tryon_image_url,

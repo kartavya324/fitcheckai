@@ -8,6 +8,12 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.middleware.base import BaseHTTPMiddleware
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+
+from app.core.rate_limit import limiter
 
 from app.api.v1.router import api_router
 from app.config import Settings, get_settings
@@ -16,7 +22,7 @@ import asyncio
 import httpx
 from app.core.logging import get_logger, setup_logging
 from app.schemas.common import ErrorBody, ErrorResponse
-from app.db import Base, engine
+from app.db import Base, engine, ensure_schema
 
 logger = get_logger(__name__)
 
@@ -36,7 +42,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings: Settings = app.state.settings
     setup_logging(settings)
     settings.ensure_storage_dirs()
-    Base.metadata.create_all(bind=engine)
+    # Dev (SQLite): auto-create tables + patch columns for zero-setup runs.
+    # Prod (Postgres): schema is owned by Alembic — run `alembic upgrade head`
+    # as a deploy step; don't create_all so migrations stay the source of truth.
+    if engine.dialect.name == "sqlite":
+        Base.metadata.create_all(bind=engine)
+        ensure_schema()
+    else:
+        logger.info("Non-SQLite DB detected; skipping create_all (use Alembic migrations)")
 
     # iPhone HEIC support: teaches Pillow to open .heic/.heif everywhere
     try:
@@ -44,7 +57,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         register_heif_opener()
     except ImportError:
         logger.warning("pillow-heif not installed; HEIC uploads will fail")
-    
+
+    # Reliability: fail jobs orphaned by a prior crash/restart so they don't
+    # sit at 'processing' forever.
+    try:
+        from app.repositories.job_repository import JobRepository
+        JobRepository(settings).reap_stale()
+    except Exception:
+        logger.exception("Orphan-job reaping failed (non-fatal)")
+
     asyncio.create_task(_keepalive_hf_space())
     yield
 
@@ -95,8 +116,48 @@ def register_exception_handlers(app: FastAPI) -> None:
         )
 
 
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Baseline hardening headers on every response."""
+
+    def __init__(self, app, *, is_production: bool) -> None:
+        super().__init__(app)
+        self._prod = is_production
+
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        response.headers.setdefault(
+            "Permissions-Policy", "camera=(), microphone=(), geolocation=()"
+        )
+        # HSTS only in prod (over HTTPS); sending it on local http is harmless
+        # but pointless and can wedge dev browsers onto https.
+        if self._prod:
+            response.headers.setdefault(
+                "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+            )
+        return response
+
+
+def _assert_prod_secrets(cfg: Settings) -> None:
+    """Refuse to boot a production deploy that still uses dev secrets."""
+    if not cfg.is_production:
+        return
+    problems = []
+    if "change-me" in cfg.jwt_secret or cfg.jwt_secret.startswith("dev-"):
+        problems.append("JWT_SECRET is still the insecure dev default")
+    if any("*" == o for o in cfg.cors_origins):
+        problems.append("CORS is wide open (*)")
+    if problems:
+        raise RuntimeError(
+            "Refusing to start in production: " + "; ".join(problems)
+        )
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     cfg = settings or get_settings()
+    _assert_prod_secrets(cfg)
 
     app = FastAPI(
         title="FitCheck AI API",
@@ -105,6 +166,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.settings = cfg
+
+    # Rate limiting (slowapi)
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+    app.add_middleware(SlowAPIMiddleware)
+
+    app.add_middleware(SecurityHeadersMiddleware, is_production=cfg.is_production)
 
     app.add_middleware(
         CORSMiddleware,

@@ -6,18 +6,18 @@ __pycache__/
 .venv/
 venv/
 env/
-storage/uploads/
-storage/results/
-storage/meta/
-!.gitkeep
+# All runtime storage — user uploads, results, avatars, wardrobe, feed, and
+# the SQLite DB. Never commit any of it; keep only the placeholder.
+storage/*
+!storage/.gitkeep
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 *.egg-info/
 dist/
 build/
-storage/fitcheck.db
-storage/avatars/
+# Alembic local scratch DBs
+*.db
 
 # Local test / debug artifacts (not source)
 *.glb
