@@ -105,6 +105,26 @@ class Settings(BaseSettings):
         alias="ACCESS_TOKEN_EXPIRE_MINUTES",
     )
 
+    # ── Payments (Stripe international · Razorpay India) ──
+    # Which provider a checkout defaults to when the client doesn't specify.
+    default_payment_provider: str = Field(default="stripe", alias="DEFAULT_PAYMENT_PROVIDER")
+    # Frontend URLs the provider redirects back to after checkout.
+    billing_success_url: str = Field(
+        default="http://localhost:3000/billing/success", alias="BILLING_SUCCESS_URL"
+    )
+    billing_cancel_url: str = Field(
+        default="http://localhost:3000/billing/cancel", alias="BILLING_CANCEL_URL"
+    )
+    # Stripe
+    stripe_secret_key: str | None = Field(default=None, alias="STRIPE_SECRET_KEY")
+    stripe_webhook_secret: str | None = Field(default=None, alias="STRIPE_WEBHOOK_SECRET")
+    stripe_price_id: str | None = Field(default=None, alias="STRIPE_PRICE_ID")  # the Pro recurring price
+    # Razorpay
+    razorpay_key_id: str | None = Field(default=None, alias="RAZORPAY_KEY_ID")
+    razorpay_key_secret: str | None = Field(default=None, alias="RAZORPAY_KEY_SECRET")
+    razorpay_webhook_secret: str | None = Field(default=None, alias="RAZORPAY_WEBHOOK_SECRET")
+    razorpay_plan_id: str | None = Field(default=None, alias="RAZORPAY_PLAN_ID")  # the Pro subscription plan
+
     # AI stylist (chat + product search)
     anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
     serpapi_key: str | None = Field(default=None, alias="SERPAPI_KEY")

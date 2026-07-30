@@ -21,6 +21,23 @@ class UserModel(Base):
     created_at = Column(DateTime(timezone=True), nullable=True)
 
 
+class SubscriptionModel(Base):
+    """A user's paid subscription, from Stripe or Razorpay. One active row per
+    user in practice; status/current_period_end drive plan-gating."""
+    __tablename__ = "subscriptions"
+
+    id = Column(String, primary_key=True, index=True)
+    user_id = Column(String, index=True, nullable=False)
+    provider = Column(String, nullable=False)              # "stripe" | "razorpay"
+    provider_customer_id = Column(String, nullable=True)
+    provider_subscription_id = Column(String, index=True, nullable=True)
+    plan = Column(String, nullable=False, default="pro")
+    status = Column(String, nullable=False, default="incomplete")  # active|canceled|past_due|incomplete
+    current_period_end = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=True)
+    updated_at = Column(DateTime(timezone=True), nullable=True)
+
+
 class JobModel(Base):
     __tablename__ = "jobs"
 

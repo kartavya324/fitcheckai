@@ -22,3 +22,5 @@ alembic
 pillow-heif
 boto3  # S3/R2 object storage (prod only; lazily imported)
 slowapi  # rate limiting
+stripe  # payments (Stripe)
+razorpay  # payments (Razorpay, India)
