@@ -4,15 +4,46 @@ import {
   Link,
   createRootRouteWithContext,
   useRouter,
+  useRouterState,
+  useNavigate,
   HeadContent,
   Scripts,
 } from "@tanstack/react-router";
+import { useEffect } from "react";
+import { Loader2 } from "lucide-react";
 
 import appCss from "../styles.css?url";
 import { Header } from "@/components/Header";
 import { Footer } from "@/components/Footer";
 import { Toaster } from "@/components/ui/sonner";
-import { AuthProvider } from "@/lib/useAuth";
+import { AuthProvider, useAuth } from "@/lib/useAuth";
+
+// Public pages anyone can see. Everything else requires a signed-in user.
+const PUBLIC_PATHS = new Set(["/", "/login"]);
+
+function AuthGate({ children }: { children: React.ReactNode }) {
+  const { user, loading } = useAuth();
+  const navigate = useNavigate();
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const isPublic = PUBLIC_PATHS.has(pathname);
+
+  useEffect(() => {
+    if (!isPublic && !loading && !user) {
+      navigate({ to: "/login", search: { redirect: pathname } });
+    }
+  }, [isPublic, loading, user, pathname, navigate]);
+
+  // While auth is resolving, or before the redirect fires, show a clean loader
+  // instead of flashing gated content.
+  if (!isPublic && (loading || !user)) {
+    return (
+      <div className="flex min-h-[60vh] items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+  return <>{children}</>;
+}
 
 function NotFoundComponent() {
   return (
@@ -127,7 +158,9 @@ function RootComponent() {
         <div className="flex min-h-screen flex-col">
           <Header />
           <main className="flex-1">
-            <Outlet />
+            <AuthGate>
+              <Outlet />
+            </AuthGate>
           </main>
           <Footer />
           <Toaster richColors position="top-center" />

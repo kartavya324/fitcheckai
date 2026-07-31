@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -10,12 +10,21 @@ export const Route = createFileRoute("/login")({
   head: () => ({
     meta: [{ title: "Sign in — FitCheck AI" }],
   }),
+  validateSearch: (search: Record<string, unknown>) => ({
+    redirect: typeof search.redirect === "string" ? search.redirect : "",
+  }),
   component: LoginPage,
 });
 
 function LoginPage() {
   const navigate = useNavigate();
-  const { login, signup } = useAuth();
+  const { redirect } = Route.useSearch();
+  const { login, signup, user } = useAuth();
+
+  // Already signed in? Don't show the form — go straight in.
+  useEffect(() => {
+    if (user) navigate({ to: redirect || "/avatar" });
+  }, [user, redirect, navigate]);
   const [mode, setMode] = useState<"login" | "signup">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -39,7 +48,7 @@ function LoginPage() {
       } else {
         await login(email, password);
       }
-      navigate({ to: "/avatar" });
+      navigate({ to: redirect || "/avatar" });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {
