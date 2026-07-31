@@ -23,7 +23,7 @@ function LoginPage() {
 
   // Already signed in? Don't show the form — go straight in.
   useEffect(() => {
-    if (user) navigate({ to: redirect || "/avatar" });
+    if (user) navigate({ to: redirect || "/" });
   }, [user, redirect, navigate]);
   const [mode, setMode] = useState<"login" | "signup">("login");
   const [email, setEmail] = useState("");
@@ -48,7 +48,7 @@ function LoginPage() {
       } else {
         await login(email, password);
       }
-      navigate({ to: redirect || "/avatar" });
+      navigate({ to: redirect || "/" });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {

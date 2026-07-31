@@ -17,6 +17,8 @@ import {
   AccordionTrigger,
 } from "@/components/ui/accordion";
 import { features, howItWorks, faqs } from "@/lib/mock-data";
+import { useAuth } from "@/lib/useAuth";
+import { Dashboard } from "@/components/Dashboard";
 import heroImg from "@/assets/hero.jpg";
 import result1 from "@/assets/result-1.jpg";
 import result2 from "@/assets/result-2.jpg";
@@ -43,6 +45,13 @@ export const Route = createFileRoute("/")({
 });
 
 function Index() {
+  const { user, loading } = useAuth();
+
+  // Logged-in users get their dashboard as "home"; visitors get the marketing
+  // landing. (Avoid flashing marketing while auth resolves.)
+  if (loading) return <div className="min-h-[60vh]" />;
+  if (user) return <Dashboard />;
+
   return (
     <>
       {/* Hero Section */}
