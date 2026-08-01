@@ -12,7 +12,7 @@ from app.repositories.job_repository import JobRepository
 from app.workers.avatar_job_runner import AvatarJobRunner, get_avatar_progress
 from app.models.job import Job, JobStatus
 from app.config import get_settings
-from app.api.deps import OptionalUserDep
+from app.api.deps import CurrentUserDep
 
 router = APIRouter(prefix="/avatar", tags=["avatar"])
 
@@ -21,7 +21,7 @@ router = APIRouter(prefix="/avatar", tags=["avatar"])
 @limiter.limit(EXPENSIVE_LIMIT)
 async def create_avatar(
     request: Request,
-    current_user: OptionalUserDep,
+    current_user: CurrentUserDep,
     person_image: UploadFile = File(...),
     back_image: UploadFile = File(None),
 ):
@@ -109,7 +109,7 @@ async def create_avatar(
 @limiter.limit(EXPENSIVE_LIMIT)
 async def avatar_tryon(
     request: Request,
-    current_user: OptionalUserDep,
+    current_user: CurrentUserDep,
     session_id: str = Form(...),
     garment_image: UploadFile = File(...),
     garment_category: str = Form("upper_body"),
@@ -193,7 +193,7 @@ async def avatar_tryon(
 
 
 @router.get("/status/{job_id}")
-def get_avatar_status(job_id: str, current_user: OptionalUserDep = None):
+def get_avatar_status(job_id: str, current_user: CurrentUserDep):
     """Poll avatar generation status."""
     settings = get_settings()
     job_repo = JobRepository(settings)

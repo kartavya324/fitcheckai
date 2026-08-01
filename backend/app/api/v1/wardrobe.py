@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from app.config import get_settings
 from app.core.exceptions import AppError
 from app.services.wardrobe_service import WardrobeService
-from app.api.deps import OptionalUserDep
+from app.api.deps import CurrentUserDep
 
 router = APIRouter(prefix="/wardrobe", tags=["wardrobe"])
 
@@ -20,7 +20,7 @@ def _service() -> WardrobeService:
 
 @router.post("/items", status_code=201)
 async def add_item(
-    current_user: OptionalUserDep,
+    current_user: CurrentUserDep,
     image: UploadFile = File(...),
     category: Literal["tops", "bottoms", "footwear", "outerwear", "accessory"] = Form(...),
     name: str | None = Form(None),
@@ -42,13 +42,13 @@ async def add_item(
 
 
 @router.get("/items")
-def list_items(current_user: OptionalUserDep, category: str | None = None) -> dict:
+def list_items(current_user: CurrentUserDep, category: str | None = None) -> dict:
     uid = current_user.id if current_user else None
     return {"items": _service().list_items(category, user_id=uid)}
 
 
 @router.delete("/items/{item_id}", status_code=204)
-def delete_item(item_id: str, current_user: OptionalUserDep) -> None:
+def delete_item(item_id: str, current_user: CurrentUserDep) -> None:
     uid = current_user.id if current_user else None
     _service().delete_item(item_id, user_id=uid)
 
@@ -59,18 +59,18 @@ class CreateOutfitRequest(BaseModel):
 
 
 @router.post("/outfits", status_code=201)
-def create_outfit(body: CreateOutfitRequest, current_user: OptionalUserDep) -> dict:
+def create_outfit(body: CreateOutfitRequest, current_user: CurrentUserDep) -> dict:
     uid = current_user.id if current_user else None
     return _service().create_outfit(name=body.name, item_ids=body.item_ids, user_id=uid)
 
 
 @router.get("/outfits")
-def list_outfits(current_user: OptionalUserDep) -> dict:
+def list_outfits(current_user: CurrentUserDep) -> dict:
     uid = current_user.id if current_user else None
     return {"outfits": _service().list_outfits(user_id=uid)}
 
 
 @router.delete("/outfits/{outfit_id}", status_code=204)
-def delete_outfit(outfit_id: str, current_user: OptionalUserDep) -> None:
+def delete_outfit(outfit_id: str, current_user: CurrentUserDep) -> None:
     uid = current_user.id if current_user else None
     _service().delete_outfit(outfit_id, user_id=uid)

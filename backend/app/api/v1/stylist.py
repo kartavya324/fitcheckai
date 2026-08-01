@@ -5,6 +5,7 @@ from typing import Literal
 
 from app.config import get_settings
 from app.services.stylist_service import StylistService
+from app.api.deps import CurrentUserDep
 
 router = APIRouter(prefix="/stylist", tags=["stylist"])
 
@@ -33,7 +34,7 @@ class StylistChatResponse(BaseModel):
 
 
 @router.post("/chat", response_model=StylistChatResponse)
-def stylist_chat(body: StylistChatRequest) -> StylistChatResponse:
+def stylist_chat(body: StylistChatRequest, current_user: CurrentUserDep) -> StylistChatResponse:
     """
     Send the conversation so far; get the stylist's reply plus any real products
     it found. Stateless — the client sends the full message history each turn.
